@@ -10,6 +10,10 @@ Read, edit, and navigate Markdown as a rich HTML document inside VS Code.
 
 It keeps Markdown as the source of truth while giving you an HTML reader with an outline, hover cards, formulas, Mermaid diagrams, image zooming, reading history, and side-by-side editing.
 
+## Demo
+
+![read-md-as-html demo](media/demo.gif)
+
 ## Highlights
 
 - **Markdown and HTML side by side**: edit Markdown on the left, read the rendered HTML on the right.

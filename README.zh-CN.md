@@ -10,6 +10,10 @@
 
 它保持 Markdown 作为唯一主源，同时提供 HTML 阅读视图：目录、引用悬浮卡片、公式、Mermaid 图、图片缩放、阅读位置历史，以及左右并排编辑。
 
+## 动态演示
+
+![read-md-as-html 动态演示](media/demo.gif)
+
 ## 功能亮点
 
 - **Markdown 与 HTML 并排**：左侧编辑 Markdown，右侧实时阅读 HTML。
