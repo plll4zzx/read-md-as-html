@@ -1,0 +1,113 @@
+{
+  "name": "read-md-as-html",
+  "displayName": "read-md-as-html",
+  "description": "Read and edit Markdown as an HTML document inside VS Code.",
+  "version": "0.0.1",
+  "publisher": "local",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/plll4zzx/read-md-as-html.git"
+  },
+  "homepage": "https://github.com/plll4zzx/read-md-as-html#readme",
+  "bugs": {
+    "url": "https://github.com/plll4zzx/read-md-as-html/issues"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:readMdAsHtml.openCurrentMarkdown",
+    "onCommand:readMdAsHtml.openPreviewOnly",
+    "onCommand:readMdAsHtml.exportCurrentMarkdownAsReaderHtml"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "readMdAsHtml.openCurrentMarkdown",
+        "title": "read-md-as-html: Open Current Markdown",
+        "icon": {
+          "light": "media/wand-markdown-light.svg",
+          "dark": "media/wand-markdown-dark.svg"
+        }
+      },
+      {
+        "command": "readMdAsHtml.openPreviewOnly",
+        "title": "read-md-as-html: Open Preview Only"
+      },
+      {
+        "command": "readMdAsHtml.exportCurrentMarkdownAsReaderHtml",
+        "title": "read-md-as-html: Export Current Markdown as Reader HTML"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "readMdAsHtml.openCurrentMarkdown",
+          "when": "resourceLangId == markdown",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "readMdAsHtml.openCurrentMarkdown",
+          "when": "resourceExtname == .md || resourceExtname == .markdown",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "read-md-as-html",
+      "properties": {
+        "readMdAsHtml.imageDirectoryName": {
+          "type": "string",
+          "default": "images",
+          "description": "Directory name, relative to the current Markdown file, where pasted images are stored."
+        },
+        "readMdAsHtml.autoSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically write Webview Markdown edits back to the VS Code document."
+        },
+        "readMdAsHtml.previewEditEnabledByDefault": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable simple preview block editing when a Studio panel opens."
+        },
+        "readMdAsHtml.theme": {
+          "type": "string",
+          "default": "reader-light",
+          "enum": [
+            "reader-light",
+            "soft-green",
+            "vscode",
+            "dark"
+          ],
+          "enumDescriptions": [
+            "Light reading theme with high contrast.",
+            "Soft green reading theme.",
+            "Follow VS Code color variables.",
+            "Dark theme with stronger contrast than the default VS Code dark mapping."
+          ],
+          "description": "read-md-as-html Webview theme."
+        },
+        "readMdAsHtml.language": {
+          "type": "string",
+          "default": "en",
+          "enum": [
+            "en",
+            "zh-CN"
+          ],
+          "enumDescriptions": [
+            "English UI.",
+            "Chinese UI."
+          ],
+          "description": "read-md-as-html Webview UI language."
+        }
+      }
+    }
+  }
+}

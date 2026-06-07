@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'none'; img-src ${cspSource} data: blob: https:; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource} https://cdn.jsdelivr.net 'nonce-${nonce}'; font-src ${cspSource} https:;">
+  <title>read-md-as-html</title>
+  <link rel="stylesheet" href="${stylesUri}">
+  <script nonce="${nonce}">
+    window.__MARKDOWN_STUDIO_INITIAL_STATE__ = ${initialState};
+    window.MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']],
+        processEscapes: true
+      },
+      options: {
+        skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+      }
+    };
+  </script>
+  <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js"></script>
+  <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/marked@13.0.3/marked.min.js"></script>
+  <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/turndown@7.2.0/dist/turndown.js"></script>
+  <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+  <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <main class="studio-shell">
+    <aside class="outline-pane">
+      <div class="pane-header">
+        <div>
+          <div id="outlineTitle" class="pane-title">Outline</div>
+          <div id="documentName" class="pane-subtitle">No document</div>
+        </div>
+      </div>
+      <nav id="outlineTree" class="outline-tree" aria-label="Document outline"></nav>
+    </aside>
+
+    <div class="resize-handle resize-outline-source" data-resize-handle="outline-source"
+      role="separator" aria-label="Resize outline and Markdown panes" aria-orientation="vertical" tabindex="0"></div>
+
+    <section class="source-pane">
+      <div class="pane-header">
+        <div>
+          <div id="sourceTitle" class="pane-title">Markdown</div>
+          <div id="sourceStatus" class="pane-subtitle">Loading</div>
+        </div>
+        <div id="sourceToolbarHost" class="toolbar-host">
+        <div id="sourceActions" class="source-actions">
+          <label id="languageControl" class="language-control" title="Choose UI language">
+            <span id="languageLabel">Language</span>
+            <select id="languageSelect">
+              <option value="en">English</option>
+              <option value="zh-CN">中文</option>
+            </select>
+          </label>
+          <label id="themeControl" class="theme-control" title="Choose read-md-as-html theme">
+            <span id="themeLabel">Theme</span>
+            <select id="themeSelect">
+              <option value="reader-light">Light</option>
+              <option value="soft-green">Soft Green</option>
+              <option value="vscode">VS Code</option>
+              <option value="dark">Dark</option>
+            </select>
+          </label>
+          <button id="saveDocument" type="button" title="Save">Save</button>
+          <button id="collapseMarkdown" type="button" title="Collapse Markdown">Collapse</button>
+          <button id="togglePreviewEdit" type="button" title="Edit rendered blocks">Edit</button>
+          <button id="exportHtml" type="button" title="Export HTML">Export</button>
+        </div>
+        </div>
+      </div>
+      <textarea id="markdownEditor" class="markdown-editor" spellcheck="false"></textarea>
+    </section>
+
+    <div class="resize-handle resize-source-preview" data-resize-handle="source-preview"
+      role="separator" aria-label="Resize Markdown and HTML preview panes" aria-orientation="vertical" tabindex="0"></div>
+
+    <section class="preview-pane">
+      <div class="pane-header">
+        <div>
+          <div id="previewTitle" class="pane-title">HTML Preview</div>
+          <div id="previewStatus" class="pane-subtitle">Live render</div>
+        </div>
+        <div class="preview-actions">
+          <div id="collapsedToolbarHost" class="toolbar-host collapsed-toolbar-host"></div>
+          <button id="readingBack" type="button" title="Back to previous reading position" disabled>←</button>
+          <button id="readingForward" type="button" title="Forward to next reading position" disabled>→</button>
+          <span id="renderStats" class="stats">0 blocks</span>
+        </div>
+      </div>
+      <aside id="previewToc" class="preview-toc collapsed" aria-label="HTML outline">
+        <button id="previewTocToggle" class="preview-toc-toggle" type="button" aria-expanded="false">Outline</button>
+        <nav id="previewTocNav" class="preview-toc-nav"></nav>
+      </aside>
+      <div id="previewScroller" class="preview-scroller" tabindex="0">
+        <article id="preview" class="preview empty"></article>
+      </div>
+    </section>
+  </main>
+
+  <div id="hovercard" class="hovercard" role="dialog" aria-hidden="true"></div>
+  <div id="imageLightbox" class="image-lightbox" aria-hidden="true">
+    <div id="lightboxToolbar" class="lightbox-toolbar" role="toolbar" aria-label="Image controls">
+      <button id="zoomOutButton" type="button" data-action="zoom-out" title="Zoom out">-</button>
+      <button id="resetZoomButton" type="button" data-action="reset" title="Reset">100%</button>
+      <button id="zoomInButton" type="button" data-action="zoom-in" title="Zoom in">+</button>
+      <button id="closeLightboxButton" type="button" data-action="close" title="Close">x</button>
+    </div>
+    <div class="lightbox-stage">
+      <img alt="">
+    </div>
+  </div>
+
+  <script nonce="${nonce}" src="${appUri}"></script>
+</body>
+</html>
