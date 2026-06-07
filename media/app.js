@@ -33,6 +33,8 @@
     readingProgress: initial.readingProgress || null,
     readingProgressSaveTimer: null,
     lastSavedReadingProgress: '',
+    annotations: Array.isArray(initial.annotations) ? initial.annotations : [],
+    pendingAnnotationSelection: null,
     readingHistoryApplying: false,
     previewScrollIntent: false,
     lightboxObjectUrl: null
@@ -65,10 +67,22 @@
     previewToc: document.getElementById('previewToc'),
     previewTocToggle: document.getElementById('previewTocToggle'),
     previewTocNav: document.getElementById('previewTocNav'),
+    previewNotes: document.getElementById('previewNotes'),
+    previewNotesToggle: document.getElementById('previewNotesToggle'),
+    previewNotesList: document.getElementById('previewNotesList'),
     renderStats: document.getElementById('renderStats'),
     readingBack: document.getElementById('readingBack'),
     readingForward: document.getElementById('readingForward'),
     hovercard: document.getElementById('hovercard'),
+    selectionToolbar: document.getElementById('selectionToolbar'),
+    highlightSelection: document.getElementById('highlightSelection'),
+    bookmarkSelection: document.getElementById('bookmarkSelection'),
+    noteSelection: document.getElementById('noteSelection'),
+    selectionNoteEditor: document.getElementById('selectionNoteEditor'),
+    selectionNoteText: document.getElementById('selectionNoteText'),
+    confirmSelectionNote: document.getElementById('confirmSelectionNote'),
+    cancelSelectionNote: document.getElementById('cancelSelectionNote'),
+    bookmarkRail: document.getElementById('bookmarkRail'),
     lightbox: document.getElementById('imageLightbox'),
     lightboxToolbar: document.getElementById('lightboxToolbar'),
     zoomOutButton: document.getElementById('zoomOutButton'),
@@ -114,6 +128,8 @@
       forwardTitle: 'Forward to next reading position',
       previewToc: 'Outline',
       previewTocLabel: 'HTML outline',
+      previewNotes: 'Notes',
+      previewNotesLabel: 'Annotations',
       outlineResizeLabel: 'Resize outline and Markdown panes',
       previewResizeLabel: 'Resize Markdown and HTML preview panes',
       imageControls: 'Image controls',
@@ -127,6 +143,7 @@
       noHeadings: 'This document has no headings.',
       untitledSection: 'Untitled section',
       emptySection: 'This section has no previewable body.',
+      metadata: 'Metadata',
       blocks: 'blocks',
       lines: 'lines',
       saved: 'Saved',
@@ -140,9 +157,32 @@
       clickToZoom: 'Click to zoom',
       reference: 'Reference',
       authors: 'Authors: ',
+      venue: 'Venue: ',
       info: 'Info: ',
       openSource: 'Open source',
-      section: 'Section'
+      section: 'Section',
+      highlight: 'Highlight',
+      bookmark: 'Bookmark',
+      note: 'Note',
+      highlightSelection: 'Highlight selection',
+      bookmarkSelection: 'Add bookmark',
+      noteSelection: 'Add note',
+      readingBookmark: 'Reading bookmark',
+      readingHighlight: 'Highlight',
+      readingNote: 'Note',
+      noteBody: 'Note: ',
+      notePrompt: 'Write a note for the selected text:',
+      notePlaceholder: 'Write a note...',
+      confirmNote: 'OK',
+      cancelNote: 'Cancel',
+      noNotes: 'No notes yet.',
+      context: 'Context: ',
+      bookmarkRail: 'Reading bookmarks',
+      sectionLocation: 'Section: ',
+      chapterNumber: 'Chapter: ',
+      subsectionTitle: 'Title: ',
+      deleteAnnotation: 'Delete',
+      deleteAnnotationTitle: 'Delete this annotation'
     },
     'zh-CN': {
       outline: '目录',
@@ -170,6 +210,8 @@
       forwardTitle: '前进到下一个阅读位置',
       previewToc: '目录',
       previewTocLabel: 'HTML 目录',
+      previewNotes: '批注',
+      previewNotesLabel: '批注列表',
       outlineResizeLabel: '调整目录和 Markdown 宽度',
       previewResizeLabel: '调整 Markdown 和 HTML 预览宽度',
       imageControls: '图片控制',
@@ -183,6 +225,7 @@
       noHeadings: '当前文档没有标题。',
       untitledSection: '未命名小节',
       emptySection: '这个小节没有可预览的正文。',
+      metadata: '元信息',
       blocks: '块',
       lines: '行',
       saved: '已保存',
@@ -196,9 +239,32 @@
       clickToZoom: '点击放大查看',
       reference: '参考文献',
       authors: '作者：',
+      venue: '会议/期刊：',
       info: '信息：',
       openSource: '打开来源',
-      section: '小节'
+      section: '小节',
+      highlight: '高亮',
+      bookmark: '书签',
+      note: '批注',
+      highlightSelection: '高亮选中文字',
+      bookmarkSelection: '加入书签',
+      noteSelection: '添加文字批注',
+      readingBookmark: '阅读书签',
+      readingHighlight: '高亮',
+      readingNote: '批注',
+      noteBody: '批注：',
+      notePrompt: '给选中的文字添加批注：',
+      notePlaceholder: '输入批注内容...',
+      confirmNote: '确定',
+      cancelNote: '取消',
+      noNotes: '还没有批注。',
+      context: '上下文：',
+      bookmarkRail: '阅读书签',
+      sectionLocation: '所在章节：',
+      chapterNumber: '章节号：',
+      subsectionTitle: '小标题：',
+      deleteAnnotation: '删除',
+      deleteAnnotationTitle: '删除这条批注'
     }
   };
 
@@ -283,6 +349,13 @@
     setText(els.togglePreviewEdit, t('edit'));
     setText(els.exportHtml, t('export'));
     setText(els.previewTocToggle, t('previewToc'));
+    setText(els.previewNotesToggle, t('previewNotes'));
+    setText(els.highlightSelection, t('highlight'));
+    setText(els.bookmarkSelection, t('bookmark'));
+    setText(els.noteSelection, t('note'));
+    setText(els.confirmSelectionNote, t('confirmNote'));
+    setText(els.cancelSelectionNote, t('cancelNote'));
+    if (els.selectionNoteText) els.selectionNoteText.placeholder = t('notePlaceholder');
 
     setTitle(els.languageControl, t('languageTitle'));
     setTitle(els.themeControl, t('themeTitle'));
@@ -295,10 +368,17 @@
     setTitle(els.resetZoomButton, t('reset'));
     setTitle(els.zoomInButton, t('zoomIn'));
     setTitle(els.closeLightboxButton, t('close'));
+    setTitle(els.highlightSelection, t('highlightSelection'));
+    setTitle(els.bookmarkSelection, t('bookmarkSelection'));
+    setTitle(els.noteSelection, t('noteSelection'));
+    setTitle(els.confirmSelectionNote, t('confirmNote'));
+    setTitle(els.cancelSelectionNote, t('cancelNote'));
 
     document.querySelector('[data-resize-handle="outline-source"]')?.setAttribute('aria-label', t('outlineResizeLabel'));
     document.querySelector('[data-resize-handle="source-preview"]')?.setAttribute('aria-label', t('previewResizeLabel'));
     els.previewToc.setAttribute('aria-label', t('previewTocLabel'));
+    els.previewNotes.setAttribute('aria-label', t('previewNotesLabel'));
+    els.bookmarkRail.setAttribute('aria-label', t('bookmarkRail'));
     els.lightboxToolbar.setAttribute('aria-label', t('imageControls'));
 
     setThemeOptionText('reader-light', t('themeReaderLight'));
@@ -312,6 +392,7 @@
     updatePreviewModeStatus();
     if (state.blocks.length) state.sectionPreviews = collectSectionPreviews(state.blocks);
     renderOutlines();
+    renderNotesPanel();
     bindDiagramClicks();
     persistWebviewState();
     if (!options.silent) post({ type: 'updateLanguage', language: state.language });
@@ -478,6 +559,12 @@
     return String(value || '').replace(/^[\s.,;:，。；：]+|[\s.,;:，。；：]+$/g, '').trim();
   }
 
+  const annotationBlockPattern = /(?:\r?\n){0,2}<!--\s*read-md-as-html:annotations\s*\r?\n[\s\S]*?\r?\n-->\s*$/;
+
+  function markdownForRender() {
+    return String(state.markdown || '').replace(annotationBlockPattern, '').replace(/\s+$/g, '');
+  }
+
   function cleanReferencePart(value) {
     return stripMarkdown(trimReferencePunctuation(value))
       .replace(/^(?:authors?|作者)\s*[:：]\s*/i, '')
@@ -506,19 +593,48 @@
     return match ? cleanReferencePart(match[1]) : '';
   }
 
+  function explicitReferenceVenue(raw) {
+    const match = /(?:^|[.;。；]\s*)(?:venue|source|journal|conference|booktitle|会议|期刊|来源|出处)\s*[:：]\s*([^.;。；]+)/i.exec(raw);
+    return match ? cleanReferencePart(match[1]) : '';
+  }
+
+  function venueFromReferenceMeta(meta) {
+    const clean = cleanReferencePart(meta);
+    if (!clean) return '';
+    const explicit = explicitReferenceVenue(clean);
+    if (explicit) return explicit;
+    const arxiv = /\barXiv\s*:?\s*\d{4}\.\d+(?:v\d+)?/i.exec(clean);
+    if (arxiv) return arxiv[0].replace(/\s+/g, '');
+    if (/\barXiv\b/i.test(clean)) return 'arXiv';
+
+    const venuePattern = /\b(?:proceedings|conference|journal|transactions|symposium|workshop|workshops|neurips|nips|iclr|icml|acl|emnlp|naacl|cvpr|iccv|eccv|aaai|ijcai|chi|uist|siggraph|www|kdd|sigmod|vldb|usenix|ndss|ccs|s&p|oakland|nature|science|pnas|acm|ieee)\b/i;
+    const parts = clean.split(/[.;。；]/).map(part => trimReferencePunctuation(part)).filter(Boolean);
+    for (const part of parts) {
+      if (venuePattern.test(part)) return part.replace(/^in\s+/i, '');
+    }
+    const firstCommaPart = trimReferencePunctuation(clean.split(',')[0] || '');
+    if (firstCommaPart && !/^(?:\d{4}|version\s+\S+|accessed\s+.+)$/i.test(firstCommaPart)) {
+      return firstCommaPart;
+    }
+    return '';
+  }
+
   function parseReferenceContent(raw, url) {
     const withoutUrl = raw.replace(url || '', '').trim();
     const titleMatch = referenceTitleMatch(withoutUrl);
     if (titleMatch) {
+      const meta = trimReferencePunctuation(withoutUrl.slice(titleMatch.index + titleMatch[0].length));
       return {
         authors: cleanReferencePart(withoutUrl.slice(0, titleMatch.index)) || explicitReferenceAuthors(withoutUrl),
         title: cleanReferencePart(titleMatch[1]),
-        meta: trimReferencePunctuation(withoutUrl.slice(titleMatch.index + titleMatch[0].length))
+        venue: explicitReferenceVenue(withoutUrl) || venueFromReferenceMeta(meta),
+        meta
       };
     }
     return {
       title: cleanReferencePart(withoutUrl).slice(0, 160),
       authors: explicitReferenceAuthors(withoutUrl),
+      venue: explicitReferenceVenue(withoutUrl) || venueFromReferenceMeta(withoutUrl),
       meta: ''
     };
   }
@@ -538,6 +654,7 @@
         raw,
         title: parsed.title,
         authors: parsed.authors,
+        venue: parsed.venue,
         meta: parsed.meta,
         url: urlMatch ? urlMatch[0].replace(/[),.;]+$/, '') : ''
       });
@@ -547,6 +664,7 @@
 
   function classifyBlock(raw) {
     const trimmed = raw.trim();
+    if (/^---\n[\s\S]*\n---$/.test(trimmed)) return 'frontmatter';
     if (/^#{1,6}\s+/.test(trimmed)) return 'heading';
     if (/^\[R\d+\]\s+/.test(trimmed)) return 'reference';
     if (/^```/.test(trimmed)) return 'code';
@@ -564,6 +682,8 @@
     let buffer = [];
     let inFence = false;
     let inMath = false;
+    let firstContentLine = lines.findIndex(line => line.trim());
+    let loopStart = 0;
 
     function flush(end) {
       if (start === null || !buffer.join('\n').trim()) {
@@ -583,7 +703,21 @@
       buffer = [];
     }
 
-    for (let i = 0; i < lines.length; i += 1) {
+    if (firstContentLine === 0 && lines[0].trim() === '---') {
+      const closing = lines.findIndex((line, index) => index > 0 && line.trim() === '---');
+      if (closing > 0) {
+        blocks.push({
+          index: blocks.length,
+          start: 0,
+          end: closing,
+          raw: lines.slice(0, closing + 1).join('\n'),
+          type: 'frontmatter'
+        });
+        loopStart = closing + 1;
+      }
+    }
+
+    for (let i = loopStart; i < lines.length; i += 1) {
       const line = lines[i];
       const trimmed = line.trim();
       if (start === null && trimmed) start = i;
@@ -690,6 +824,7 @@
   }
 
   function simpleMarkdownFragment(raw, type) {
+    if (type === 'frontmatter') return renderFrontMatter(raw);
     if (type === 'heading') {
       const match = /^(#{1,6})\s+(.+)$/.exec(raw.trim());
       if (match) {
@@ -719,7 +854,39 @@
     return '<p>' + renderInlineMarkdown(raw.replace(/\n+/g, ' ')) + '</p>';
   }
 
+  function parseFrontMatter(raw) {
+    const lines = String(raw || '').replace(/\r\n/g, '\n').split('\n').slice(1, -1);
+    const entries = [];
+    let current = null;
+    for (const line of lines) {
+      const match = /^([A-Za-z0-9_.-]+)\s*:\s*(.*)$/.exec(line);
+      if (match) {
+        current = { key: match[1], value: match[2].trim() };
+        entries.push(current);
+        continue;
+      }
+      if (current && line.trim()) {
+        current.value += ' ' + line.trim();
+      }
+    }
+    return entries;
+  }
+
+  function renderFrontMatter(raw) {
+    const entries = parseFrontMatter(raw);
+    if (!entries.length) return '<div class="frontmatter-card"><div class="frontmatter-kicker">' + escapeHtml(t('metadata')) + '</div><pre>' + escapeHtml(raw) + '</pre></div>';
+    return [
+      '<div class="frontmatter-card">',
+      '<div class="frontmatter-kicker">' + escapeHtml(t('metadata')) + '</div>',
+      '<dl>',
+      entries.map(entry => '<div><dt>' + escapeHtml(entry.key) + '</dt><dd>' + escapeHtml(entry.value) + '</dd></div>').join(''),
+      '</dl>',
+      '</div>'
+    ].join('');
+  }
+
   function renderMarkdownFragment(raw, type) {
+    if (type === 'frontmatter') return renderFrontMatter(raw);
     if (type === 'math') return '<div class="math-block">' + escapeHtml(raw) + '</div>';
     if (window.marked) {
       let html = window.marked.parse(raw);
@@ -740,7 +907,8 @@
     const classes = [
       'md-block',
       block.editable && state.previewEditEnabled ? 'preview-editable' : 'preview-readonly',
-      block.type === 'reference' ? 'reference-block' : ''
+      block.type === 'reference' ? 'reference-block' : '',
+      block.type === 'frontmatter' ? 'frontmatter-block' : ''
     ].filter(Boolean).join(' ');
     const attrs = [
       ' data-block-index="' + block.index + '"',
@@ -757,8 +925,9 @@
 
   async function renderPreview() {
     initLibraries();
-    state.refs = collectReferences(state.markdown);
-    state.blocks = splitMarkdownBlocks(state.markdown);
+    const sourceMarkdown = markdownForRender();
+    state.refs = collectReferences(sourceMarkdown);
+    state.blocks = splitMarkdownBlocks(sourceMarkdown);
     state.sectionPreviews = collectSectionPreviews(state.blocks);
     els.preview.classList.remove('empty');
     els.preview.innerHTML = state.blocks.map(block => renderBlock(block)).join('\n') || '<div class="empty-state"><h1>' + escapeHtml(t('emptyDocument')) + '</h1></div>';
@@ -766,6 +935,9 @@
     renderOutlines();
     postProcessPreview();
     await runRenderers();
+    applyAnnotations();
+    updateBookmarkMarkers();
+    renderNotesPanel();
     scheduleDiagramBinding();
   }
 
@@ -920,6 +1092,65 @@
     els.previewTocToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   }
 
+  function togglePreviewNotes() {
+    const collapsed = els.previewNotes.classList.toggle('collapsed');
+    els.previewNotesToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  }
+
+  function annotationSectionInfo(annotation) {
+    if (!annotation) return null;
+    const blockIndex = Number(annotation.blockIndex);
+    const sourceStart = Number(annotation.sourceStart);
+    let heading = null;
+    for (const block of state.blocks) {
+      if (block.type !== 'heading' || !block.headingTitle) continue;
+      const beforeBlock = Number.isFinite(blockIndex) && blockIndex >= 0 && block.index <= blockIndex;
+      const beforeLine = Number.isFinite(sourceStart) && sourceStart >= 0 && block.start <= sourceStart;
+      if (beforeBlock || beforeLine) heading = block;
+      const afterBlock = Number.isFinite(blockIndex) && blockIndex >= 0 && block.index > blockIndex;
+      const afterLine = Number.isFinite(sourceStart) && sourceStart >= 0 && block.start > sourceStart;
+      if (afterBlock || afterLine) break;
+    }
+    if (!heading) return null;
+    const title = heading.headingTitle || '';
+    const match = /^((?:\d+|[A-Z])(?:[.\-]\d+)*\.?)\s+(.+)$/.exec(title);
+    return {
+      id: heading.headingId || '',
+      title,
+      number: match ? match[1].replace(/\.$/, '') : '',
+      subtitle: match ? match[2].trim() : title
+    };
+  }
+
+  function annotationHoverContent(annotation, anchor) {
+    const section = annotationSectionInfo(annotation);
+    const fromRail = anchor && anchor.classList && anchor.classList.contains('annotation-marker');
+    const label = annotation.type === 'bookmark' ? t('readingBookmark') : annotation.type === 'note' ? t('readingNote') : t('readingHighlight');
+    const parts = [
+      '<div class="hover-kicker">' + escapeHtml(label) + '</div>',
+      '<div class="hover-title">' + escapeHtml(annotation.text || t('untitledSection')) + '</div>'
+    ];
+    if (fromRail && section) {
+      parts.push('<div class="hover-body"><strong>' + escapeHtml(t('sectionLocation')) + '</strong>' + escapeHtml(section.title) + '</div>');
+      if (section.number) parts.push('<div class="hover-body"><strong>' + escapeHtml(t('chapterNumber')) + '</strong>' + escapeHtml(section.number) + '</div>');
+      if (section.subtitle) parts.push('<div class="hover-body"><strong>' + escapeHtml(t('subsectionTitle')) + '</strong>' + escapeHtml(section.subtitle) + '</div>');
+    }
+    if (annotation.context) {
+      parts.push('<div class="hover-body"><strong>' + escapeHtml(t('context')) + '</strong>' + escapeHtml(annotation.context) + '</div>');
+    }
+    if (annotation.note) {
+      parts.push('<div class="hover-body hover-note"><strong>' + escapeHtml(t('noteBody')) + '</strong>' + escapeHtml(annotation.note) + '</div>');
+    }
+    parts.push(
+      '<div class="hover-actions"><button type="button" data-delete-annotation-id="' +
+      escapeHtml(annotation.id) +
+      '" title="' + escapeHtml(t('deleteAnnotationTitle')) + '">' +
+      escapeHtml(t('deleteAnnotation')) +
+      '</button></div>'
+    );
+    return parts.join('');
+  }
+
   function hoverContentFor(anchor) {
     const targetId = anchor.dataset.previewId || ((anchor.getAttribute('href') || '').startsWith('#') ? anchor.getAttribute('href').slice(1) : '');
     if (/^ref-r\d+$/i.test(targetId)) {
@@ -930,9 +1161,16 @@
         '<div class="hover-kicker">' + escapeHtml(t('reference')) + '</div>',
         '<div class="hover-title">[' + ref.label + '] ' + escapeHtml(ref.title) + '</div>',
         ref.authors ? '<div class="hover-body"><strong>' + escapeHtml(t('authors')) + '</strong>' + escapeHtml(ref.authors) + '</div>' : '',
+        ref.venue ? '<div class="hover-body"><strong>' + escapeHtml(t('venue')) + '</strong>' + escapeHtml(ref.venue) + '</div>' : '',
         ref.meta ? '<div class="hover-body"><strong>' + escapeHtml(t('info')) + '</strong>' + escapeHtml(ref.meta) + '</div>' : '',
         ref.url ? '<div class="hover-body"><a href="' + escapeHtml(ref.url) + '">' + escapeHtml(t('openSource')) + '</a></div>' : ''
       ].join('');
+    }
+    const annotationId = anchor.dataset.annotationId;
+    if (annotationId) {
+      const annotation = state.annotations.find(entry => entry.id === annotationId);
+      if (!annotation) return null;
+      return annotationHoverContent(annotation, anchor);
     }
     if (targetId && state.sectionPreviews.has(targetId)) {
       const section = state.sectionPreviews.get(targetId);
@@ -970,9 +1208,434 @@
     }, 150);
   }
 
+  function hideHovercardNow() {
+    clearTimeout(state.hoverTimer);
+    els.hovercard.classList.remove('visible');
+    els.hovercard.setAttribute('aria-hidden', 'true');
+  }
+
+  function elementForNode(node) {
+    if (!node) return null;
+    return node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  }
+
+  function trimAnnotationText(value, maxLength) {
+    return String(value || '').replace(/\s+/g, ' ').trim().slice(0, maxLength);
+  }
+
+  function sanitizeClientAnnotation(annotation) {
+    if (!annotation || typeof annotation !== 'object') return null;
+    const type = ['bookmark', 'highlight', 'note'].includes(annotation.type) ? annotation.type : '';
+    if (!type) return null;
+    const startOffset = Math.max(0, Math.round(Number(annotation.startOffset) || 0));
+    const endOffset = Math.max(startOffset, Math.round(Number(annotation.endOffset) || startOffset));
+    const blockIndex = Math.round(Number(annotation.blockIndex));
+    const sourceStart = Math.round(Number(annotation.sourceStart));
+    if (!Number.isFinite(blockIndex) && !Number.isFinite(sourceStart)) return null;
+    return {
+      id: trimAnnotationText(annotation.id, 80) || newAnnotationId(type),
+      type,
+      text: trimAnnotationText(annotation.text, 280),
+      note: trimAnnotationText(annotation.note, 1600),
+      context: trimAnnotationText(annotation.context, 900),
+      blockIndex: Number.isFinite(blockIndex) ? blockIndex : -1,
+      sourceStart: Number.isFinite(sourceStart) ? sourceStart : -1,
+      startOffset,
+      endOffset,
+      blockOffset: Math.max(0, Math.round(Number(annotation.blockOffset) || 0)),
+      createdAt: Math.max(0, Math.round(Number(annotation.createdAt) || Date.now()))
+    };
+  }
+
+  function sanitizeClientAnnotations(annotations) {
+    if (!Array.isArray(annotations)) return [];
+    return annotations.map(sanitizeClientAnnotation).filter(Boolean).slice(-500);
+  }
+
+  function newAnnotationId(type) {
+    return type + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  }
+
+  function textOffsetWithinBlock(block, container, offset) {
+    const range = document.createRange();
+    range.selectNodeContents(block);
+    try {
+      range.setEnd(container, offset);
+      return range.toString().length;
+    } catch (error) {
+      return 0;
+    } finally {
+      if (range.detach) range.detach();
+    }
+  }
+
+  function selectionRect(range) {
+    const rects = Array.from(range.getClientRects()).filter(rect => rect.width || rect.height);
+    if (rects.length) return rects[rects.length - 1];
+    return range.getBoundingClientRect();
+  }
+
+  function selectionIsAnnotatable(range) {
+    const common = elementForNode(range.commonAncestorContainer);
+    if (!common) return false;
+    return !common.closest('svg, mjx-container, .mermaid, .selection-toolbar, .bookmark-rail');
+  }
+
+  function capturePreviewSelection() {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    if (!selectionIsAnnotatable(range)) return null;
+    const startElement = elementForNode(range.startContainer);
+    const endElement = elementForNode(range.endContainer);
+    const startBlock = startElement ? startElement.closest('.md-block') : null;
+    const endBlock = endElement ? endElement.closest('.md-block') : null;
+    if (!startBlock || !endBlock || startBlock !== endBlock || !els.preview.contains(startBlock)) return null;
+
+    const blockText = startBlock.textContent || '';
+    const startOffset = clamp(textOffsetWithinBlock(startBlock, range.startContainer, range.startOffset), 0, blockText.length);
+    const endOffset = clamp(textOffsetWithinBlock(startBlock, range.endContainer, range.endOffset), startOffset, blockText.length);
+    if (endOffset <= startOffset) return null;
+
+    const selectedText = blockText.slice(startOffset, endOffset).trim() || selection.toString().trim();
+    if (!selectedText) return null;
+    const contextStart = Math.max(0, startOffset - 110);
+    const contextEnd = Math.min(blockText.length, endOffset + 180);
+    const context = (contextStart > 0 ? '...' : '') +
+      trimAnnotationText(blockText.slice(contextStart, contextEnd), 900) +
+      (contextEnd < blockText.length ? '...' : '');
+    const rect = selectionRect(range);
+    const scrollerRect = els.previewScroller.getBoundingClientRect();
+    return {
+      text: selectedText,
+      context,
+      blockIndex: Number(startBlock.dataset.blockIndex),
+      sourceStart: Number(startBlock.dataset.sourceStart),
+      startOffset,
+      endOffset,
+      blockOffset: Math.max(0, Math.round(els.previewScroller.scrollTop + rect.top - scrollerRect.top - startBlock.offsetTop)),
+      rect
+    };
+  }
+
+  function hideSelectionToolbar() {
+    state.pendingAnnotationSelection = null;
+    hideNoteEditor();
+    els.selectionToolbar.classList.remove('visible');
+    els.selectionToolbar.setAttribute('aria-hidden', 'true');
+  }
+
+  function positionSelectionToolbar(selectionInfo) {
+    if (!selectionInfo || !selectionInfo.rect) return;
+    const toolbarRect = els.selectionToolbar.getBoundingClientRect();
+    const rect = selectionInfo.rect;
+    let left = selectionInfo.point ? selectionInfo.point.x + 12 : rect.left + rect.width / 2 - toolbarRect.width / 2;
+    let top = selectionInfo.point ? selectionInfo.point.y + 12 : rect.top - toolbarRect.height - 10;
+    if (!selectionInfo.point && top < 8) top = rect.bottom + 10;
+    left = clamp(left, 8, Math.max(8, window.innerWidth - toolbarRect.width - 8));
+    top = clamp(top, 8, Math.max(8, window.innerHeight - toolbarRect.height - 8));
+    els.selectionToolbar.style.left = Math.round(left) + 'px';
+    els.selectionToolbar.style.top = Math.round(top) + 'px';
+  }
+
+  function showSelectionToolbar(selectionInfo) {
+    if (!selectionInfo || !selectionInfo.rect) {
+      hideSelectionToolbar();
+      return;
+    }
+    hideNoteEditor();
+    state.pendingAnnotationSelection = selectionInfo;
+    els.selectionToolbar.classList.add('visible');
+    els.selectionToolbar.setAttribute('aria-hidden', 'false');
+    positionSelectionToolbar(selectionInfo);
+  }
+
+  function hideNoteEditor() {
+    if (!els.selectionNoteEditor) return;
+    els.selectionNoteEditor.hidden = true;
+    if (els.selectionNoteText) els.selectionNoteText.value = '';
+  }
+
+  function showNoteEditor() {
+    const selectionInfo = state.pendingAnnotationSelection || capturePreviewSelection();
+    if (!selectionInfo) return;
+    state.pendingAnnotationSelection = selectionInfo;
+    els.selectionToolbar.classList.add('visible');
+    els.selectionToolbar.setAttribute('aria-hidden', 'false');
+    els.selectionNoteEditor.hidden = false;
+    els.selectionNoteText.value = '';
+    els.selectionNoteText.placeholder = t('notePlaceholder');
+    window.requestAnimationFrame(() => {
+      positionSelectionToolbar(selectionInfo);
+      els.selectionNoteText.focus();
+    });
+  }
+
+  function handlePreviewSelection(event) {
+    window.setTimeout(() => {
+      const selectionInfo = capturePreviewSelection();
+      if (selectionInfo && event && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
+        selectionInfo.point = { x: event.clientX, y: event.clientY };
+      }
+      if (selectionInfo) showSelectionToolbar(selectionInfo);
+      else hideSelectionToolbar();
+    }, 0);
+  }
+
+  function saveAnnotations() {
+    state.annotations = sanitizeClientAnnotations(state.annotations);
+    post({ type: 'updateAnnotations', uri: state.uri, annotations: state.annotations });
+  }
+
+  function addAnnotation(type, options = {}) {
+    const selectionInfo = state.pendingAnnotationSelection || capturePreviewSelection();
+    if (!selectionInfo) return;
+    const noteText = type === 'note' ? trimAnnotationText(options.noteText, 1600) : '';
+    if (type === 'note' && !noteText) {
+      if (els.selectionNoteText) els.selectionNoteText.focus();
+      return;
+    }
+    const annotation = sanitizeClientAnnotation(Object.assign({}, selectionInfo, {
+      id: newAnnotationId(type),
+      type,
+      note: noteText,
+      createdAt: Date.now()
+    }));
+    if (!annotation) return;
+    state.annotations = sanitizeClientAnnotations(state.annotations).filter(entry => !(
+      entry.type === annotation.type &&
+      entry.blockIndex === annotation.blockIndex &&
+      entry.sourceStart === annotation.sourceStart &&
+      entry.startOffset === annotation.startOffset &&
+      entry.endOffset === annotation.endOffset
+    ));
+    state.annotations.push(annotation);
+    saveAnnotations();
+    hideSelectionToolbar();
+    const selection = window.getSelection();
+    if (selection) selection.removeAllRanges();
+    applyAnnotations();
+    updateBookmarkMarkers();
+    renderNotesPanel();
+  }
+
+  function confirmNoteAnnotation() {
+    addAnnotation('note', { noteText: els.selectionNoteText ? els.selectionNoteText.value : '' });
+  }
+
+  function deleteAnnotation(annotationId) {
+    const before = state.annotations.length;
+    state.annotations = sanitizeClientAnnotations(state.annotations).filter(annotation => annotation.id !== annotationId);
+    if (state.annotations.length === before) return;
+    saveAnnotations();
+    hideHovercardNow();
+    applyAnnotations();
+    updateBookmarkMarkers();
+    renderNotesPanel();
+  }
+
+  function clearAnnotationMarks() {
+    els.preview.querySelectorAll('.reader-highlight, .reader-bookmark-text, .reader-note-text').forEach(mark => {
+      const parent = mark.parentNode;
+      if (!parent) return;
+      while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+      parent.removeChild(mark);
+      parent.normalize();
+    });
+  }
+
+  function annotationBlockElement(annotation) {
+    if (!annotation) return null;
+    const sourceStart = Number(annotation.sourceStart);
+    if (Number.isFinite(sourceStart) && sourceStart >= 0) {
+      const byLine = els.preview.querySelector('.md-block[data-source-start="' + sourceStart + '"]');
+      if (byLine) return byLine;
+    }
+    const blockIndex = Number(annotation.blockIndex);
+    if (Number.isFinite(blockIndex) && blockIndex >= 0) {
+      return els.preview.querySelector('.md-block[data-block-index="' + blockIndex + '"]');
+    }
+    return null;
+  }
+
+  function canWrapTextNode(node) {
+    const parent = node.parentElement;
+    if (!parent) return false;
+    return !parent.closest('script, style, textarea, button, svg, mjx-container, .selection-toolbar, .bookmark-rail');
+  }
+
+  function wrapTextRangeInElement(block, annotation) {
+    const blockText = block.textContent || '';
+    const start = clamp(annotation.startOffset, 0, blockText.length);
+    const end = clamp(annotation.endOffset, start, blockText.length);
+    if (end <= start) return false;
+
+    const segments = [];
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    let offset = 0;
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const length = node.nodeValue.length;
+      const nodeStart = offset;
+      const nodeEnd = offset + length;
+      if (nodeEnd > start && nodeStart < end && canWrapTextNode(node)) {
+        segments.push({
+          node,
+          start: Math.max(0, start - nodeStart),
+          end: Math.min(length, end - nodeStart)
+        });
+      }
+      offset = nodeEnd;
+    }
+
+    let wrapped = false;
+    const className = annotation.type === 'bookmark'
+      ? 'reader-bookmark-text'
+      : annotation.type === 'note'
+        ? 'reader-note-text'
+        : 'reader-highlight';
+    for (const segment of segments.reverse()) {
+      if (segment.end <= segment.start) continue;
+      const range = document.createRange();
+      range.setStart(segment.node, segment.start);
+      range.setEnd(segment.node, segment.end);
+      const mark = document.createElement('mark');
+      mark.className = className;
+      mark.dataset.annotationId = annotation.id;
+      mark.title = annotation.type === 'bookmark' ? t('readingBookmark') : annotation.type === 'note' ? t('readingNote') : t('readingHighlight');
+      try {
+        range.surroundContents(mark);
+      } catch (error) {
+        const contents = range.extractContents();
+        mark.appendChild(contents);
+        range.insertNode(mark);
+      } finally {
+        if (range.detach) range.detach();
+      }
+      wrapped = true;
+    }
+    return wrapped;
+  }
+
+  function applyAnnotations() {
+    clearAnnotationMarks();
+    state.annotations = sanitizeClientAnnotations(state.annotations);
+    const sorted = state.annotations.slice().sort((a, b) => {
+      if (a.blockIndex !== b.blockIndex) return b.blockIndex - a.blockIndex;
+      return b.startOffset - a.startOffset;
+    });
+    for (const annotation of sorted) {
+      const block = annotationBlockElement(annotation);
+      if (block) wrapTextRangeInElement(block, annotation);
+    }
+  }
+
+  function targetAnnotationElement(annotation) {
+    if (!annotation || !annotation.id) return null;
+    return els.preview.querySelector('[data-annotation-id="' + CSS.escape(annotation.id) + '"]') || annotationBlockElement(annotation);
+  }
+
+  function annotationTargetTop(annotation) {
+    const target = targetAnnotationElement(annotation);
+    if (!target) return 0;
+    const scrollerRect = els.previewScroller.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    return Math.max(0, els.previewScroller.scrollTop + targetRect.top - scrollerRect.top);
+  }
+
+  function jumpToAnnotation(annotation) {
+    const target = targetAnnotationElement(annotation);
+    if (!target) return;
+    const top = annotationTargetTop(annotation) - Math.max(36, els.previewScroller.clientHeight * 0.16);
+    setPreviewScrollTop(top, { recordCurrent: true, recordTarget: true });
+    target.classList.add('annotation-pulse');
+    window.setTimeout(() => target.classList.remove('annotation-pulse'), 1300);
+    scheduleScrollSync('preview');
+    scheduleReadingProgressSave(120);
+  }
+
+  function updateBookmarkMarkers() {
+    if (!els.bookmarkRail) return;
+    els.bookmarkRail.innerHTML = '';
+    const railAnnotations = sanitizeClientAnnotations(state.annotations).filter(annotation => annotation.type === 'bookmark' || annotation.type === 'note');
+    if (!railAnnotations.length) return;
+    const railHeight = els.bookmarkRail.clientHeight || els.previewScroller.clientHeight;
+    const travel = Math.max(0, railHeight - 12);
+    const maxTop = maxPreviewScrollTop();
+    for (const annotation of railAnnotations) {
+      const targetTop = annotationTargetTop(annotation);
+      const targetScrollTop = normalizedPreviewScrollTop(targetTop - Math.max(24, els.previewScroller.clientHeight * 0.16));
+      const ratio = maxTop > 0 ? targetScrollTop / maxTop : 0;
+      const marker = document.createElement('button');
+      marker.type = 'button';
+      marker.className = 'annotation-marker ' + (annotation.type === 'note' ? 'note-marker' : 'bookmark-marker');
+      marker.dataset.annotationId = annotation.id;
+      marker.style.top = Math.round(clamp(ratio, 0, 1) * travel) + 'px';
+      marker.title = annotation.text || (annotation.type === 'note' ? t('readingNote') : t('readingBookmark'));
+      marker.addEventListener('mouseenter', () => showHovercard(marker));
+      marker.addEventListener('mouseleave', hideHovercardSoon);
+      marker.addEventListener('click', event => {
+        event.preventDefault();
+        jumpToAnnotation(annotation);
+      });
+      els.bookmarkRail.appendChild(marker);
+    }
+  }
+
+  function renderNotesPanel() {
+    if (!els.previewNotesList) return;
+    els.previewNotesList.innerHTML = '';
+    const notes = sanitizeClientAnnotations(state.annotations).filter(annotation => annotation.type === 'note');
+    if (!notes.length) {
+      const empty = document.createElement('div');
+      empty.className = 'preview-notes-empty';
+      empty.textContent = t('noNotes');
+      els.previewNotesList.appendChild(empty);
+      return;
+    }
+    for (const annotation of notes) {
+      const item = document.createElement('div');
+      item.className = 'preview-note-item';
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'preview-note-jump';
+      const section = annotationSectionInfo(annotation);
+      const meta = document.createElement('div');
+      meta.className = 'preview-note-meta';
+      meta.textContent = section ? section.title : t('readingNote');
+      const quote = document.createElement('div');
+      quote.className = 'preview-note-quote';
+      quote.textContent = annotation.text || t('untitledSection');
+      const note = document.createElement('div');
+      note.className = 'preview-note-body';
+      note.textContent = annotation.note || '';
+      button.append(meta, quote, note);
+      button.addEventListener('click', () => {
+        jumpToAnnotation(annotation);
+        els.previewNotes.classList.add('collapsed');
+        els.previewNotesToggle.setAttribute('aria-expanded', 'false');
+      });
+
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'preview-note-delete';
+      remove.textContent = t('deleteAnnotation');
+      remove.title = t('deleteAnnotationTitle');
+      remove.addEventListener('click', event => {
+        event.preventDefault();
+        deleteAnnotation(annotation.id);
+      });
+
+      item.append(button, remove);
+      els.previewNotesList.appendChild(item);
+    }
+  }
+
   function bindImageClicks() {
     els.preview.querySelectorAll('img.doc-image').forEach(img => {
       img.addEventListener('click', () => openLightboxSource(img.currentSrc || img.src, img.alt || ''));
+      img.addEventListener('load', updateBookmarkMarkers);
     });
   }
 
@@ -1478,6 +2141,7 @@
         ? (message.readingProgress || state.readingProgress)
         : captureReadingProgress();
       state.markdown = message.markdown || '';
+      if (Array.isArray(message.annotations)) state.annotations = sanitizeClientAnnotations(message.annotations);
       els.editor.value = state.markdown;
       els.documentName.textContent = message.fileName || state.fileName;
       updateSourceStatus();
@@ -1523,8 +2187,28 @@
       els.languageSelect.addEventListener('change', () => applyLanguage(els.languageSelect.value));
     }
     els.previewTocToggle.addEventListener('click', togglePreviewToc);
+    els.previewNotesToggle.addEventListener('click', togglePreviewNotes);
     els.readingBack.addEventListener('click', () => navigateReadingHistory(-1));
     els.readingForward.addEventListener('click', () => navigateReadingHistory(1));
+    els.selectionToolbar.addEventListener('pointerdown', event => {
+      if (event.target.closest('textarea, input')) return;
+      event.preventDefault();
+    });
+    els.highlightSelection.addEventListener('click', () => addAnnotation('highlight'));
+    els.bookmarkSelection.addEventListener('click', () => addAnnotation('bookmark'));
+    els.noteSelection.addEventListener('click', showNoteEditor);
+    els.confirmSelectionNote.addEventListener('click', confirmNoteAnnotation);
+    els.cancelSelectionNote.addEventListener('click', hideNoteEditor);
+    els.selectionNoteText.addEventListener('keydown', event => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+        event.preventDefault();
+        confirmNoteAnnotation();
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        hideNoteEditor();
+      }
+    });
 
     els.editor.addEventListener('input', () => setMarkdown(els.editor.value, { skipEditorUpdate: true }));
     els.editor.addEventListener('scroll', () => scheduleScrollSync('source'));
@@ -1537,6 +2221,7 @@
     });
 
     els.previewScroller.addEventListener('scroll', () => {
+      hideSelectionToolbar();
       scheduleScrollSync('preview');
       scheduleReadingProgressSave();
       if (!state.readingHistoryApplying && state.scrollSyncLock !== 'source' && !state.previewScrollIntent) {
@@ -1558,6 +2243,8 @@
       if (!block) return;
       state.activeBlockIndex = Number(block.dataset.blockIndex);
     });
+    els.preview.addEventListener('mouseup', handlePreviewSelection);
+    els.preview.addEventListener('keyup', handlePreviewSelection);
     els.preview.addEventListener('input', event => {
       const block = event.target.closest('.md-block[contenteditable="true"]');
       if (block) schedulePreviewPatch(block);
@@ -1576,17 +2263,23 @@
     });
 
     els.preview.addEventListener('mouseover', event => {
-      const anchor = event.target.closest('a, [data-preview-id]');
+      const anchor = event.target.closest('a, [data-preview-id], [data-annotation-id]');
       if (anchor && els.preview.contains(anchor)) showHovercard(anchor);
     });
     els.preview.addEventListener('mouseout', event => {
-      const anchor = event.target.closest('a, [data-preview-id]');
+      const anchor = event.target.closest('a, [data-preview-id], [data-annotation-id]');
       if (!anchor || !els.preview.contains(anchor)) return;
       if (anchor.contains(event.relatedTarget)) return;
       hideHovercardSoon();
     });
     els.hovercard.addEventListener('mouseenter', () => clearTimeout(state.hoverTimer));
     els.hovercard.addEventListener('mouseleave', hideHovercardSoon);
+    els.hovercard.addEventListener('click', event => {
+      const deleteButton = event.target.closest('[data-delete-annotation-id]');
+      if (!deleteButton) return;
+      event.preventDefault();
+      deleteAnnotation(deleteButton.dataset.deleteAnnotationId || '');
+    });
 
     els.lightbox.addEventListener('click', event => {
       if (suppressLightboxClick) {
@@ -1622,11 +2315,22 @@
         event.preventDefault();
         saveMarkdown();
       }
-      if (event.key === 'Escape') closeLightbox();
+      if (event.key === 'Escape') {
+        hideSelectionToolbar();
+        closeLightbox();
+      }
+    });
+    document.addEventListener('pointerdown', event => {
+      if (els.selectionToolbar.contains(event.target) || els.preview.contains(event.target)) return;
+      hideSelectionToolbar();
     });
 
     window.addEventListener('message', event => handleHostMessage(event.data));
     window.addEventListener('beforeunload', saveReadingProgressNow);
+    window.addEventListener('resize', () => {
+      hideSelectionToolbar();
+      updateBookmarkMarkers();
+    });
   }
 
   function bootstrap() {
@@ -1636,6 +2340,7 @@
     applyLayout();
     els.documentName.textContent = state.fileName;
     els.editor.value = state.markdown;
+    state.annotations = sanitizeClientAnnotations(state.annotations);
     if (state.previewOnly) els.editor.disabled = true;
     setupResizers();
     setupEvents();

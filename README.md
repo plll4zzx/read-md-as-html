@@ -20,13 +20,15 @@ It keeps Markdown as the source of truth while giving you an HTML reader with an
 - **Collapsible Markdown pane**: hide the Markdown editor when you want a focused reading mode.
 - **Movable pane boundaries**: resize outline, Markdown, and preview panes.
 - **Outline everywhere**: left document outline plus a collapsible outline inside the HTML preview.
-- **Reference hover cards**: hover over `[R1]` citations to see title, authors, source metadata, and links.
+- **Reference hover cards**: hover over `[R1]` citations to see title, authors, venue or journal, source metadata, and links.
 - **Section hover cards**: hover internal section links to preview the target section.
+- **Reader annotations**: select text in the HTML preview to highlight it, add a bookmark, or write a note. Bookmarks and notes appear on the right-side scroll rail with context hover cards and click-to-jump navigation.
 - **Math and Mermaid support**: render formulas and Mermaid diagrams in the preview.
 - **Image workflow**: paste screenshots, save them locally, and insert Markdown image syntax automatically.
 - **Image and Mermaid lightbox**: click to zoom, scroll to scale, and drag to inspect details.
 - **Reading history**: go back and forward between reading positions after jumps or scrolling.
 - **Persistent reading progress**: reopen a Markdown file at the last reading position instead of starting from the top.
+- **Document-local state**: notes, bookmarks, and highlights are stored inside the Markdown file; reading progress and exported HTML default to a `.md/` folder beside the Markdown file.
 - **Themes and languages**: switch between light, soft green, VS Code, and dark themes; switch UI language between English and Chinese.
 - **No backend server**: everything runs inside the VS Code Webview.
 
@@ -84,6 +86,13 @@ Available languages:
 
 - `en`
 - `zh-CN`
+
+## Storage Model
+
+- Highlights, bookmarks, and notes are written to a hidden HTML comment block at the end of the Markdown file.
+- Reading progress is stored in `.md/<markdown-file>.read-md-as-html.json` beside the Markdown file.
+- Exported HTML defaults to `.md/<markdown-file>.html`.
+- No annotation or reading-progress state is intentionally kept in VS Code system cache; older workspaceState data is migrated on open.
 
 ## Markdown Authoring Scheme
 

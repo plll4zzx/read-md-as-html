@@ -95,13 +95,32 @@
         <button id="previewTocToggle" class="preview-toc-toggle" type="button" aria-expanded="false">Outline</button>
         <nav id="previewTocNav" class="preview-toc-nav"></nav>
       </aside>
+      <aside id="previewNotes" class="preview-notes collapsed" aria-label="Annotations">
+        <button id="previewNotesToggle" class="preview-notes-toggle" type="button" aria-expanded="false">Notes</button>
+        <div id="previewNotesList" class="preview-notes-list"></div>
+      </aside>
       <div id="previewScroller" class="preview-scroller" tabindex="0">
         <article id="preview" class="preview empty"></article>
       </div>
+      <div id="bookmarkRail" class="bookmark-rail" aria-label="Reading bookmarks"></div>
     </section>
   </main>
 
   <div id="hovercard" class="hovercard" role="dialog" aria-hidden="true"></div>
+  <div id="selectionToolbar" class="selection-toolbar" aria-hidden="true">
+    <div class="selection-toolbar-actions">
+      <button id="highlightSelection" type="button" data-annotation-action="highlight" title="Highlight selection">Highlight</button>
+      <button id="bookmarkSelection" type="button" data-annotation-action="bookmark" title="Add bookmark">Bookmark</button>
+      <button id="noteSelection" type="button" data-annotation-action="note" title="Add note">Note</button>
+    </div>
+    <div id="selectionNoteEditor" class="selection-note-editor" hidden>
+      <textarea id="selectionNoteText" rows="3"></textarea>
+      <div class="selection-note-actions">
+        <button id="confirmSelectionNote" type="button">OK</button>
+        <button id="cancelSelectionNote" type="button">Cancel</button>
+      </div>
+    </div>
+  </div>
   <div id="imageLightbox" class="image-lightbox" aria-hidden="true">
     <div id="lightboxToolbar" class="lightbox-toolbar" role="toolbar" aria-label="Image controls">
       <button id="zoomOutButton" type="button" data-action="zoom-out" title="Zoom out">-</button>
