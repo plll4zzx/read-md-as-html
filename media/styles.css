@@ -861,8 +861,14 @@ body.resizing .preview-scroller {
   bottom: 0;
   width: 16px;
   z-index: 28;
-  cursor: pointer;
+  cursor: grab;
+  touch-action: none;
   pointer-events: auto;
+}
+
+.bookmark-rail.dragging,
+body.rail-dragging .bookmark-rail {
+  cursor: grabbing;
 }
 
 .bookmark-rail:hover {

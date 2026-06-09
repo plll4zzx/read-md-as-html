@@ -8,7 +8,7 @@ Read, edit, and navigate Markdown as a rich HTML document inside VS Code.
 
 `read-md-as-html` is a local-first VS Code extension for long Markdown documents: research surveys, paper notes, technical reports, design docs, and anything that benefits from a polished reading view.
 
-It keeps Markdown as the source of truth while giving you an HTML reader with an outline, hover cards, formulas, Mermaid diagrams, image zooming, reading history, and side-by-side editing.
+It keeps Markdown as the source of truth while giving you an HTML reader with an outline, hover cards, formulas, Mermaid diagrams, image zooming, cross-file reading history, margin notes, scroll-rail previews, and side-by-side editing.
 
 ## Demo
 
@@ -17,25 +17,42 @@ It keeps Markdown as the source of truth while giving you an HTML reader with an
 ## Highlights
 
 - **Markdown and HTML side by side**: edit Markdown on the left, read the rendered HTML on the right.
-- **Collapsible Markdown pane**: hide the Markdown editor when you want a focused reading mode.
+- **Focused reading by default**: the Markdown pane starts collapsed and can be reopened whenever you want side-by-side editing.
 - **Movable pane boundaries**: resize outline, Markdown, and preview panes.
 - **Outline everywhere**: left document outline plus a collapsible outline inside the HTML preview.
-- **Folder Markdown switcher**: the left pane shows Markdown files from the current folder above the document outline, with a draggable split between the two areas.
+- **Folder Markdown switcher**: the left pane shows Markdown files from the current folder above the document outline, with a draggable split between the two areas, live updates, modified-time sorting, and pin-to-top checkboxes.
+- **Adjustable HTML reading size**: change the preview font size from the toolbar without touching the Markdown source.
 - **Reference hover cards**: hover over `[R1]` citations to see title, authors, venue or journal, source metadata, and links.
 - **Section hover cards**: hover internal section links to preview the target section.
-- **Reader annotations**: select text in the HTML preview to highlight it, add a bookmark, or write a note. Bookmarks and notes appear on the right-side scroll rail with context hover cards and click-to-jump navigation.
+- **Reader annotations**: select text in the HTML preview to highlight it, add a bookmark, or write a note. Notes render as connected margin cards on wide previews and compact hover cards on narrow previews.
+- **Smart scroll rail**: hover the right-side rail to preview nearby content, click the rail to jump, drag it to scroll, and use bookmark/note markers for context hover cards and click-to-jump navigation.
 - **Math and Mermaid support**: render formulas and Mermaid diagrams in the preview.
 - **Image workflow**: paste screenshots, save them locally, and insert Markdown image syntax automatically.
 - **Image and Mermaid lightbox**: click to zoom, scroll to scale, and drag to inspect details.
-- **Reading history**: go back and forward between reading positions after jumps or scrolling.
+- **Cross-file reading history**: go back and forward between reading positions even after switching Markdown files in the same folder.
 - **Persistent reading progress**: reopen a Markdown file at the last reading position instead of starting from the top.
-- **Document-local state**: notes, bookmarks, and highlights are stored inside the Markdown file; reading progress and exported HTML default to a `.md/` folder beside the Markdown file.
+- **Document-local state**: notes, bookmarks, and highlights are stored inside the Markdown file; reading progress, pinned file state, and exported HTML default to a `.md/` folder beside the Markdown file.
 - **Themes and languages**: switch between light, soft green, VS Code, and dark themes; switch UI language between English and Chinese.
 - **No backend server**: everything runs inside the VS Code Webview.
 
 ## Screenshot
 
 ![read-md-as-html interface screenshot](media/show.png)
+
+## Compared With VS Code's Built-In Markdown Preview
+
+VS Code's native Markdown preview is excellent for quick checks. `read-md-as-html` focuses on long-form reading and research workflows:
+
+| Capability | VS Code built-in preview | read-md-as-html |
+| --- | --- | --- |
+| Long-document navigation | Document outline is separate from the preview workflow. | Folder Markdown list, document outline, and HTML outline live in one reader. |
+| Cross-file reading | Back/forward does not track reading positions across Markdown files. | Back/forward can jump across files and restore the exact reading position. |
+| Reader annotations | No built-in highlight, bookmark, or note layer for the rendered document. | Highlights, bookmarks, notes, scroll-rail markers, margin-note cards, and delete controls. |
+| Citation and section preview | Links open or jump, but do not provide rich reading context. | Hover cards for references, citations, sections, bookmarks, notes, and scroll-rail positions. |
+| Screenshot workflow | Pasted images usually require manual file management and Markdown edits. | Paste screenshots, save them locally, and insert Markdown image syntax automatically. |
+| Figure inspection | Images render inline; detailed inspection is limited. | Images and Mermaid diagrams open in a zoom/pan lightbox. |
+| Reading ergonomics | Good for quick preview checks. | Reader themes, adjustable HTML font size, collapsed Markdown pane, and resizable panes. |
+| State transparency | Preview state is mostly editor/session behavior. | Annotations live in Markdown; reading progress and folder state live in a local `.md/` folder. |
 
 ## Commands
 
@@ -92,7 +109,9 @@ Available languages:
 
 - Highlights, bookmarks, and notes are written to a hidden HTML comment block at the end of the Markdown file.
 - Reading progress is stored in `.md/<markdown-file>.read-md-as-html.json` beside the Markdown file.
+- Pinned folder file order is stored in `.md/read-md-as-html.folder.json`.
 - Exported HTML defaults to `.md/<markdown-file>.html`.
+- When the `.md/` cache folder is created, the extension also ensures the adjacent `.gitignore` contains `.md/`.
 - No annotation or reading-progress state is intentionally kept in VS Code system cache; older workspaceState data is migrated on open.
 
 ## Markdown Authoring Scheme

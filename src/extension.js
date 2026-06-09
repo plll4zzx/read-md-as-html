@@ -1,5 +1,6 @@
 const vscode = require('vscode');
 const path = require('path');
+const crypto = require('crypto');
 
 const textDecoder = new TextDecoder('utf-8');
 const textEncoder = new TextEncoder();
@@ -51,11 +52,14 @@ async function openStudio(context, uri, options) {
     if (next === state.markdown) return;
     const embedded = annotationsFromMarkdown(next);
     state.markdown = next;
+    state.markdownHash = hashText(state.markdown);
     state.annotations = embedded.annotations;
     panel.webview.postMessage({
       type: 'documentChanged',
       uri: state.documentUri.toString(),
       markdown: state.markdown,
+      markdownHash: state.markdownHash,
+      changeReason: 'editor',
       annotations: state.annotations
     });
   });
@@ -98,6 +102,7 @@ async function loadDocumentState(context, documentUri, options = {}) {
   return {
     documentUri,
     markdown,
+    markdownHash: hashText(markdown),
     previewOnly: !!options.previewOnly,
     documentCache,
     readingProgress: documentCache.readingProgress,
@@ -152,6 +157,7 @@ function watchMarkdownDirectory(panel, state) {
   const directory = markdownDirectoryUri(state.documentUri);
   const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(directory, '*.{md,markdown}'));
   let refreshTimer;
+  let activeReloadTimer;
 
   const scheduleRefresh = () => {
     clearTimeout(refreshTimer);
@@ -164,13 +170,25 @@ function watchMarkdownDirectory(panel, state) {
     }, 120);
   };
 
+  const scheduleActiveReload = (uri) => {
+    if (!uri || uri.toString() !== state.documentUri.toString()) return;
+    clearTimeout(activeReloadTimer);
+    activeReloadTimer = setTimeout(() => {
+      reloadMarkdownFromDisk(panel, state, { reason: 'external' }).catch(showError);
+    }, 180);
+  };
+
   watcher.onDidCreate(scheduleRefresh);
   watcher.onDidDelete(scheduleRefresh);
-  watcher.onDidChange(scheduleRefresh);
+  watcher.onDidChange((uri) => {
+    scheduleRefresh();
+    scheduleActiveReload(uri);
+  });
 
   return {
     dispose() {
       clearTimeout(refreshTimer);
+      clearTimeout(activeReloadTimer);
       watcher.dispose();
     }
   };
@@ -197,6 +215,7 @@ async function webviewHtml(context, webview, state) {
     uri: state.documentUri.toString(),
     fileName: path.basename(state.documentUri.fsPath),
     markdown: state.markdown,
+    markdownHash: state.markdownHash,
     markdownFiles: await markdownFilesFor(state.documentUri),
     previewOnly: state.previewOnly,
     autoSave: vscode.workspace.getConfiguration('readMdAsHtml').get('autoSave', true),
@@ -227,6 +246,7 @@ function wirePanelMessages(context, panel, state) {
           uri: state.documentUri.toString(),
           fileName: path.basename(state.documentUri.fsPath),
           markdown: state.markdown,
+          markdownHash: state.markdownHash,
           markdownFiles: await markdownFilesFor(state.documentUri),
           readingProgress: state.readingProgress,
           annotations: state.annotations
@@ -237,12 +257,19 @@ function wirePanelMessages(context, panel, state) {
         const nextMarkdown = String(message.markdown || '');
         if (nextMarkdown === state.markdown && !message.saveToDisk) return;
         const embedded = annotationsFromMarkdown(nextMarkdown);
+        const nextStoredMarkdown = markdownForStorage(nextMarkdown, embedded.annotations);
+        if (!(await canWriteMarkdown(panel, state, message, nextStoredMarkdown))) return;
         state.annotations = embedded.annotations;
-        state.markdown = markdownForStorage(nextMarkdown, state.annotations);
-        await writeMarkdown(state.documentUri, state.markdown);
-        if (message.saveToDisk) {
-          await saveOpenDocument(state.documentUri);
-        }
+        state.markdown = nextStoredMarkdown;
+        await writeMarkdown(state.documentUri, state.markdown, { save: true });
+        state.markdownHash = hashText(state.markdown);
+        panel.webview.postMessage({
+          type: 'markdownCommitted',
+          uri: state.documentUri.toString(),
+          markdownHash: state.markdownHash,
+          markdown: state.markdown,
+          saveId: message.saveId
+        });
       }
       if (message.type === 'switchDocument') {
         if (message.uri !== state.documentUri.toString()) return;
@@ -257,14 +284,19 @@ function wirePanelMessages(context, panel, state) {
           const currentMarkdown = String(message.markdown);
           if (currentMarkdown !== state.markdown) {
             const embedded = annotationsFromMarkdown(currentMarkdown);
-            state.annotations = embedded.annotations.length ? embedded.annotations : state.annotations;
-            state.markdown = markdownForStorage(currentMarkdown, state.annotations);
-            await writeMarkdown(state.documentUri, state.markdown);
+            const nextAnnotations = embedded.annotations.length ? embedded.annotations : state.annotations;
+            const nextStoredMarkdown = markdownForStorage(currentMarkdown, nextAnnotations);
+            if (!(await canWriteMarkdown(panel, state, message, nextStoredMarkdown))) return;
+            state.annotations = nextAnnotations;
+            state.markdown = nextStoredMarkdown;
+            await writeMarkdown(state.documentUri, state.markdown, { save: true });
+            state.markdownHash = hashText(state.markdown);
           }
         }
         const nextState = await loadDocumentState(context, targetUri, { previewOnly: state.previewOnly });
         state.documentUri = nextState.documentUri;
         state.markdown = nextState.markdown;
+        state.markdownHash = nextState.markdownHash;
         state.documentCache = nextState.documentCache;
         state.readingProgress = nextState.readingProgress;
         state.annotations = nextState.annotations;
@@ -275,6 +307,7 @@ function wirePanelMessages(context, panel, state) {
           uri: state.documentUri.toString(),
           fileName: path.basename(state.documentUri.fsPath),
           markdown: state.markdown,
+          markdownHash: state.markdownHash,
           markdownFiles: await markdownFilesFor(state.documentUri),
           readingProgress: state.readingProgress,
           annotations: state.annotations
@@ -341,14 +374,23 @@ function wirePanelMessages(context, panel, state) {
       }
       if (message.type === 'updateAnnotations') {
         if (message.uri !== state.documentUri.toString()) return;
-        state.annotations = sanitizeAnnotations(message.annotations);
-        state.markdown = markdownForStorage(state.markdown, state.annotations);
-        await writeMarkdown(state.documentUri, state.markdown);
+        const nextAnnotations = sanitizeAnnotations(message.annotations);
+        const currentMarkdown = typeof message.markdown === 'string'
+          ? String(message.markdown)
+          : await currentMarkdownFor(state.documentUri);
+        const nextStoredMarkdown = markdownForStorage(currentMarkdown || state.markdown, nextAnnotations);
+        if (!(await canWriteMarkdown(panel, state, message, nextStoredMarkdown))) return;
+        state.annotations = nextAnnotations;
+        state.markdown = nextStoredMarkdown;
+        await writeMarkdown(state.documentUri, state.markdown, { save: true });
+        state.markdownHash = hashText(state.markdown);
         panel.webview.postMessage({
           type: 'documentChanged',
           uri: state.documentUri.toString(),
           fileName: path.basename(state.documentUri.fsPath),
           markdown: state.markdown,
+          markdownHash: state.markdownHash,
+          changeReason: 'annotation',
           readingProgress: state.readingProgress,
           annotations: state.annotations
         });
@@ -591,6 +633,55 @@ function legacyDocumentCache(context, uri) {
   });
 }
 
+function hashText(text) {
+  return crypto.createHash('sha256').update(String(text || ''), 'utf8').digest('hex');
+}
+
+async function currentMarkdownFor(uri) {
+  const openDoc = vscode.workspace.textDocuments.find((document) => document.uri.toString() === uri.toString());
+  if (openDoc && openDoc.isDirty) return openDoc.getText();
+  try {
+    return await readText(uri);
+  } catch (error) {
+    if (openDoc) return openDoc.getText();
+    throw error;
+  }
+}
+
+async function reloadMarkdownFromDisk(panel, state, options = {}) {
+  const currentMarkdown = await currentMarkdownFor(state.documentUri);
+  const currentHash = hashText(currentMarkdown);
+  if (currentHash === state.markdownHash && !options.force) return;
+  const embedded = annotationsFromMarkdown(currentMarkdown);
+  state.markdown = currentMarkdown;
+  state.markdownHash = currentHash;
+  state.annotations = embedded.annotations;
+  panel.webview.postMessage({
+    type: 'documentChanged',
+    uri: state.documentUri.toString(),
+    fileName: path.basename(state.documentUri.fsPath),
+    markdown: state.markdown,
+    markdownHash: state.markdownHash,
+    changeReason: options.reason || 'external',
+    forceReload: !!options.force,
+    readingProgress: state.readingProgress,
+    annotations: state.annotations
+  });
+}
+
+async function canWriteMarkdown(panel, state, message, nextMarkdown) {
+  const currentMarkdown = await currentMarkdownFor(state.documentUri);
+  const currentHash = hashText(currentMarkdown);
+  const baseHash = String(message.baseMarkdownHash || state.markdownHash || '');
+  if (currentHash === baseHash || currentHash === hashText(nextMarkdown)) return true;
+  await reloadMarkdownFromDisk(panel, state, { force: true, reason: 'conflict' });
+  panel.webview.postMessage({
+    type: 'error',
+    message: 'The Markdown file changed outside read-md-as-html. Reloaded the latest disk version instead of overwriting it.'
+  });
+  return false;
+}
+
 async function writeDocumentCache(markdownUri, state) {
   const cache = sanitizeDocumentCache({
     readingProgress: state.readingProgress,
@@ -611,15 +702,20 @@ async function clearLegacyState(context, uri) {
   await context.workspaceState.update(annotationsKey(uri), undefined);
 }
 
-async function writeMarkdown(uri, markdown) {
+async function writeMarkdown(uri, markdown, options = {}) {
   const openDoc = vscode.workspace.textDocuments.find((document) => document.uri.toString() === uri.toString());
   if (openDoc) {
     const current = openDoc.getText();
-    if (current === markdown) return;
-    const edit = new vscode.WorkspaceEdit();
-    const fullRange = new vscode.Range(openDoc.positionAt(0), openDoc.positionAt(current.length));
-    edit.replace(uri, fullRange, markdown);
-    await vscode.workspace.applyEdit(edit);
+    if (current !== markdown) {
+      const edit = new vscode.WorkspaceEdit();
+      const fullRange = new vscode.Range(openDoc.positionAt(0), openDoc.positionAt(current.length));
+      edit.replace(uri, fullRange, markdown);
+      await vscode.workspace.applyEdit(edit);
+    }
+    if (options.save) {
+      const saved = await openDoc.save();
+      if (!saved) throw new Error('VS Code did not save the Markdown document.');
+    }
     return;
   }
   try {
@@ -629,13 +725,6 @@ async function writeMarkdown(uri, markdown) {
     // If the file cannot be read here, let the write surface the real error.
   }
   await vscode.workspace.fs.writeFile(uri, textEncoder.encode(markdown));
-}
-
-async function saveOpenDocument(uri) {
-  const openDoc = vscode.workspace.textDocuments.find((document) => document.uri.toString() === uri.toString());
-  if (openDoc) {
-    await openDoc.save();
-  }
 }
 
 async function savePastedImage(webview, markdownUri, message) {

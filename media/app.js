@@ -7,6 +7,8 @@
     uri: initial.uri || '',
     fileName: initial.fileName || 'document.md',
     markdown: initial.markdown || '',
+    committedMarkdown: initial.markdown || '',
+    markdownHash: initial.markdownHash || '',
     previewOnly: !!initial.previewOnly,
     autoSave: initial.autoSave !== false,
     previewEditEnabled: !!initial.previewEditEnabled,
@@ -27,12 +29,17 @@
     renderTimer: null,
     renderVersion: 0,
     saveTimer: null,
+    saveSeq: 0,
+    pendingMarkdownSaves: new Map(),
     patchTimer: null,
     hoverTimer: null,
     noteMarginRaf: 0,
     bookmarkMarkersRaf: 0,
     railPreviewRaf: 0,
     lastRailPreviewEvent: null,
+    railDrag: null,
+    railClickSuppressed: false,
+    railClickSuppressTimer: null,
     scrollDebounceTimer: null,
     scrollLockTimer: null,
     scrollSyncLock: null,
@@ -177,6 +184,8 @@
       previewSynced: 'Preview edit synced to Markdown',
       imageSaved: 'Image saved to {path}',
       operationFailed: 'Operation failed',
+      externalChangeReloaded: 'Reloaded the latest Markdown from disk.',
+      externalChangePending: 'External Markdown change detected; local webview edits are still pending.',
       imageSaveFailed: 'Image save failed',
       mermaidError: 'Mermaid render error',
       mathError: 'Formula render error',
@@ -269,6 +278,8 @@
       previewSynced: '右侧修改已同步到 Markdown',
       imageSaved: '图片已保存到 {path}',
       operationFailed: '操作失败',
+      externalChangeReloaded: '\u5df2\u4ece\u78c1\u76d8\u5237\u65b0\u6700\u65b0 Markdown\u3002',
+      externalChangePending: '\u68c0\u6d4b\u5230\u5916\u90e8 Markdown \u53d8\u5316\uff1bwebview \u91cc\u8fd8\u6709\u672a\u4fdd\u5b58\u7f16\u8f91\u3002',
       imageSaveFailed: '图片保存失败',
       mermaidError: 'Mermaid 渲染有错误',
       mathError: '公式渲染有错误',
@@ -320,6 +331,10 @@
       value = value.replace('{' + name + '}', replacement);
     }
     return value;
+  }
+
+  function hasPendingLocalMarkdownChange() {
+    return state.markdown !== state.committedMarkdown;
   }
 
   function validTheme(theme) {
@@ -1329,6 +1344,7 @@
       uri: state.uri,
       targetUri,
       markdown: state.markdown,
+      baseMarkdownHash: state.markdownHash,
       readingProgress: captureReadingProgress()
     });
     setStatus(t('liveRender'));
@@ -1671,7 +1687,14 @@
 
   function saveAnnotations() {
     state.annotations = sanitizeClientAnnotations(state.annotations);
-    post({ type: 'updateAnnotations', uri: state.uri, annotations: state.annotations });
+    clearTimeout(state.saveTimer);
+    post({
+      type: 'updateAnnotations',
+      uri: state.uri,
+      markdown: state.markdown,
+      annotations: state.annotations,
+      baseMarkdownHash: state.markdownHash
+    });
   }
 
   function addAnnotation(type, options = {}) {
@@ -1909,6 +1932,10 @@
   function handleRailClick(event) {
     if (!els.bookmarkRail || event.target.closest('.annotation-marker')) return;
     event.preventDefault();
+    if (state.railClickSuppressed) {
+      state.railClickSuppressed = false;
+      return;
+    }
     beginPreviewScrollIntent();
     setPreviewScrollTop(railTargetTopFromEvent(event), { recordCurrent: true, recordTarget: true });
     scheduleScrollSync('preview');
@@ -1935,6 +1962,52 @@
       state.railPreviewRaf = 0;
     }
     hideHovercardSoon();
+  }
+
+  function handleRailPointerDown(event) {
+    if (!els.bookmarkRail || event.button !== 0 || event.target.closest('.annotation-marker')) return;
+    event.preventDefault();
+    beginPreviewScrollIntent();
+    state.railDrag = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      moved: false
+    };
+    clearTimeout(state.railClickSuppressTimer);
+    state.railClickSuppressed = true;
+    els.bookmarkRail.classList.add('dragging');
+    document.body.classList.add('rail-dragging');
+    els.bookmarkRail.setPointerCapture(event.pointerId);
+    setPreviewScrollTop(railTargetTopFromEvent(event), { recordCurrent: true, recordTarget: true });
+    scheduleScrollSync('preview');
+    scheduleReadingProgressSave(120);
+    scheduleNoteMarginRender();
+  }
+
+  function handleRailPointerMove(event) {
+    if (!state.railDrag || state.railDrag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    if (Math.abs(event.clientY - state.railDrag.startY) > 2) state.railDrag.moved = true;
+    els.previewScroller.scrollTop = normalizedPreviewScrollTop(railTargetTopFromEvent(event));
+    scheduleScrollSync('preview');
+    scheduleReadingProgressSave(120);
+    scheduleNoteMarginRender();
+  }
+
+  function finishRailPointerDrag(event) {
+    if (!state.railDrag || state.railDrag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    const moved = !!state.railDrag.moved;
+    state.railDrag = null;
+    els.bookmarkRail.classList.remove('dragging');
+    document.body.classList.remove('rail-dragging');
+    if (els.bookmarkRail.hasPointerCapture(event.pointerId)) {
+      els.bookmarkRail.releasePointerCapture(event.pointerId);
+    }
+    if (moved) scheduleReadingHistoryCapture();
+    scheduleReadingProgressSave(120);
+    clearTimeout(state.railClickSuppressTimer);
+    state.railClickSuppressTimer = window.setTimeout(() => { state.railClickSuppressed = false; }, 160);
   }
 
   function scheduleBookmarkMarkersUpdate() {
@@ -2582,10 +2655,19 @@
   }
 
   function saveMarkdown(options = {}) {
+    const markdown = state.markdown;
+    if (markdown === state.committedMarkdown && !options.saveToDisk) {
+      els.sourceStatus.textContent = t('synced');
+      return;
+    }
+    const saveId = ++state.saveSeq;
+    state.pendingMarkdownSaves.set(saveId, markdown);
     post({
       type: 'updateMarkdown',
       uri: state.uri,
-      markdown: state.markdown,
+      markdown,
+      baseMarkdownHash: state.markdownHash,
+      saveId,
       saveToDisk: !!options.saveToDisk
     });
     els.sourceStatus.textContent = options.saveToDisk ? t('saved') : t('synced');
@@ -2661,6 +2743,16 @@
     if (!message || typeof message.type !== 'string') return;
     if (message.type === 'documentLoaded' || message.type === 'documentChanged') {
       if (message.type === 'documentChanged' && message.uri !== state.uri) return;
+      const incomingMarkdown = typeof message.markdown === 'string' ? message.markdown : '';
+      const guardedExternalChange = message.changeReason === 'external' || message.changeReason === 'editor';
+      if (message.type === 'documentChanged' && guardedExternalChange && !message.forceReload && hasPendingLocalMarkdownChange() && incomingMarkdown !== state.markdown) {
+        setStatus(t('externalChangePending'));
+        return;
+      }
+      if (message.type === 'documentChanged' && message.forceReload) {
+        clearTimeout(state.saveTimer);
+        state.pendingMarkdownSaves.clear();
+      }
       const pendingSwitch = message.type === 'documentLoaded' && state.pendingDocumentSwitch && state.pendingDocumentSwitch.targetUri === message.uri
         ? state.pendingDocumentSwitch
         : null;
@@ -2670,12 +2762,16 @@
       if (message.type === 'documentLoaded') {
         state.uri = message.uri || state.uri;
         state.fileName = message.fileName || state.fileName;
+        state.markdownHash = message.markdownHash || state.markdownHash;
         state.imageMap = new Map();
         state.pendingImageTarget = null;
         state.activeBlockIndex = null;
+        state.pendingMarkdownSaves.clear();
         if (pendingSwitch) state.pendingDocumentSwitch = null;
       }
-      state.markdown = message.markdown || '';
+      state.markdown = incomingMarkdown;
+      state.committedMarkdown = state.markdown;
+      state.markdownHash = message.markdownHash || state.markdownHash;
       if (Array.isArray(message.annotations)) state.annotations = sanitizeClientAnnotations(message.annotations);
       if (Array.isArray(message.markdownFiles)) state.markdownFiles = message.markdownFiles;
       els.editor.value = state.markdown;
@@ -2696,6 +2792,9 @@
         window.setTimeout(scheduleNoteMarginRender, 140);
         window.setTimeout(scheduleNoteMarginRender, 640);
       });
+      if (message.type === 'documentChanged' && message.changeReason === 'external') {
+        setStatus(t('externalChangeReloaded'));
+      }
     }
     if (message.type === 'imageResolved') {
       if (!message.relativePath || !message.webviewUri) return;
@@ -2717,6 +2816,15 @@
       if (message.uri !== state.uri || !Array.isArray(message.markdownFiles)) return;
       state.markdownFiles = message.markdownFiles;
       renderMarkdownFiles();
+    }
+    if (message.type === 'markdownCommitted') {
+      if (message.uri !== state.uri) return;
+      state.markdownHash = message.markdownHash || state.markdownHash;
+      const saveId = Number(message.saveId);
+      if (Number.isFinite(saveId)) state.pendingMarkdownSaves.delete(saveId);
+      if (typeof message.markdown === 'string') {
+        state.committedMarkdown = message.markdown;
+      }
     }
     if (message.type === 'error') setStatus(message.message || t('operationFailed'));
   }
@@ -2829,6 +2937,10 @@
       hideHovercardSoon();
     });
     if (els.bookmarkRail) {
+      els.bookmarkRail.addEventListener('pointerdown', handleRailPointerDown);
+      els.bookmarkRail.addEventListener('pointermove', handleRailPointerMove);
+      els.bookmarkRail.addEventListener('pointerup', finishRailPointerDrag);
+      els.bookmarkRail.addEventListener('pointercancel', finishRailPointerDrag);
       els.bookmarkRail.addEventListener('mousemove', handleRailMouseMove);
       els.bookmarkRail.addEventListener('mouseleave', handleRailMouseLeave);
       els.bookmarkRail.addEventListener('click', handleRailClick);
