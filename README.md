@@ -20,6 +20,7 @@ It keeps Markdown as the source of truth while giving you an HTML reader with an
 - **Collapsible Markdown pane**: hide the Markdown editor when you want a focused reading mode.
 - **Movable pane boundaries**: resize outline, Markdown, and preview panes.
 - **Outline everywhere**: left document outline plus a collapsible outline inside the HTML preview.
+- **Folder Markdown switcher**: the left pane shows Markdown files from the current folder above the document outline, with a draggable split between the two areas.
 - **Reference hover cards**: hover over `[R1]` citations to see title, authors, venue or journal, source metadata, and links.
 - **Section hover cards**: hover internal section links to preview the target section.
 - **Reader annotations**: select text in the HTML preview to highlight it, add a bookmark, or write a note. Bookmarks and notes appear on the right-side scroll rail with context hover cards and click-to-jump navigation.

@@ -2,6 +2,7 @@
 node_modules/**
 *.vsix
 media/*.mp4
+.md/**
 .git/**
 .gitignore
 npm-debug.log

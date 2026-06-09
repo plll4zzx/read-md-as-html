@@ -29,13 +29,23 @@
 <body>
   <main class="studio-shell">
     <aside class="outline-pane">
-      <div class="pane-header">
-        <div>
-          <div id="outlineTitle" class="pane-title">Outline</div>
-          <div id="documentName" class="pane-subtitle">No document</div>
+      <div class="outline-files-section">
+        <div class="outline-section-header">
+          <div>
+            <div id="fileListTitle" class="pane-title">Markdown Files</div>
+            <div id="documentName" class="pane-subtitle">No document</div>
+          </div>
         </div>
+        <nav id="markdownFileList" class="markdown-file-list" aria-label="Markdown files"></nav>
       </div>
-      <nav id="outlineTree" class="outline-tree" aria-label="Document outline"></nav>
+      <div id="outlineSplitHandle" class="outline-split-handle"
+        role="separator" aria-label="Resize Markdown file list and outline" aria-orientation="horizontal" tabindex="0"></div>
+      <div class="outline-tree-section">
+        <div class="outline-section-header compact">
+          <div id="outlineTitle" class="pane-title">Outline</div>
+        </div>
+        <nav id="outlineTree" class="outline-tree" aria-label="Document outline"></nav>
+      </div>
     </aside>
 
     <div class="resize-handle resize-outline-source" data-resize-handle="outline-source"
@@ -63,6 +73,19 @@
               <option value="soft-green">Soft Green</option>
               <option value="vscode">VS Code</option>
               <option value="dark">Dark</option>
+            </select>
+          </label>
+          <label id="fontSizeControl" class="font-size-control" title="Preview font size">
+            <span id="fontSizeLabel">Size</span>
+            <select id="fontSizeSelect">
+              <option value="13">13px</option>
+              <option value="14">14px</option>
+              <option value="15">15px</option>
+              <option value="16">16px</option>
+              <option value="18">18px</option>
+              <option value="20">20px</option>
+              <option value="22">22px</option>
+              <option value="24">24px</option>
             </select>
           </label>
           <button id="saveDocument" type="button" title="Save">Save</button>
@@ -99,6 +122,8 @@
         <button id="previewNotesToggle" class="preview-notes-toggle" type="button" aria-expanded="false">Notes</button>
         <div id="previewNotesList" class="preview-notes-list"></div>
       </aside>
+      <aside id="noteMarginPanel" class="note-margin-panel" aria-label="Margin notes"></aside>
+      <svg id="noteConnectorLayer" class="note-connector-layer" aria-hidden="true"></svg>
       <div id="previewScroller" class="preview-scroller" tabindex="0">
         <article id="preview" class="preview empty"></article>
       </div>

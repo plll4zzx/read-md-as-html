@@ -13,15 +13,26 @@
     theme: persistedState.theme || initial.theme || 'reader-light',
     language: persistedState.language || initial.language || 'en',
     layout: Object.assign({ outline: 300, source: 580 }, persistedState.layout || {}),
-    sourceCollapsed: !initial.previewOnly && !!persistedState.sourceCollapsed,
+    outlineFilesHeight: Number(persistedState.outlineFilesHeight) || 190,
+    sourceCollapsed: !initial.previewOnly && (typeof persistedState.sourceCollapsed === 'boolean' ? persistedState.sourceCollapsed : true),
+    readerFontSize: Number(persistedState.readerFontSize || initial.readerFontSize) || 15,
+    markdownFiles: Array.isArray(initial.markdownFiles) ? initial.markdownFiles : [],
     blocks: [],
     refs: new Map(),
     sectionPreviews: new Map(),
     imageMap: new Map(),
+    blockElements: [],
+    blockElementByIndex: new Map(),
+    blockElementBySourceStart: new Map(),
     renderTimer: null,
+    renderVersion: 0,
     saveTimer: null,
     patchTimer: null,
     hoverTimer: null,
+    noteMarginRaf: 0,
+    bookmarkMarkersRaf: 0,
+    railPreviewRaf: 0,
+    lastRailPreviewEvent: null,
     scrollDebounceTimer: null,
     scrollLockTimer: null,
     scrollSyncLock: null,
@@ -33,6 +44,7 @@
     readingProgress: initial.readingProgress || null,
     readingProgressSaveTimer: null,
     lastSavedReadingProgress: '',
+    pendingDocumentSwitch: null,
     annotations: Array.isArray(initial.annotations) ? initial.annotations : [],
     pendingAnnotationSelection: null,
     readingHistoryApplying: false,
@@ -42,11 +54,13 @@
 
   const els = {
     outlineTitle: document.getElementById('outlineTitle'),
+    fileListTitle: document.getElementById('fileListTitle'),
     documentName: document.getElementById('documentName'),
     sourceTitle: document.getElementById('sourceTitle'),
     previewTitle: document.getElementById('previewTitle'),
     sourceStatus: document.getElementById('sourceStatus'),
     previewStatus: document.getElementById('previewStatus'),
+    previewPane: document.querySelector('.preview-pane'),
     sourceToolbarHost: document.getElementById('sourceToolbarHost'),
     collapsedToolbarHost: document.getElementById('collapsedToolbarHost'),
     sourceActions: document.getElementById('sourceActions'),
@@ -55,6 +69,9 @@
     languageSelect: document.getElementById('languageSelect'),
     themeControl: document.getElementById('themeControl'),
     themeLabel: document.getElementById('themeLabel'),
+    fontSizeControl: document.getElementById('fontSizeControl'),
+    fontSizeLabel: document.getElementById('fontSizeLabel'),
+    fontSizeSelect: document.getElementById('fontSizeSelect'),
     saveDocument: document.getElementById('saveDocument'),
     collapseMarkdown: document.getElementById('collapseMarkdown'),
     exportHtml: document.getElementById('exportHtml'),
@@ -63,6 +80,8 @@
     editor: document.getElementById('markdownEditor'),
     preview: document.getElementById('preview'),
     previewScroller: document.getElementById('previewScroller'),
+    markdownFileList: document.getElementById('markdownFileList'),
+    outlineSplitHandle: document.getElementById('outlineSplitHandle'),
     outlineTree: document.getElementById('outlineTree'),
     previewToc: document.getElementById('previewToc'),
     previewTocToggle: document.getElementById('previewTocToggle'),
@@ -70,6 +89,8 @@
     previewNotes: document.getElementById('previewNotes'),
     previewNotesToggle: document.getElementById('previewNotesToggle'),
     previewNotesList: document.getElementById('previewNotesList'),
+    noteMarginPanel: document.getElementById('noteMarginPanel'),
+    noteConnectorLayer: document.getElementById('noteConnectorLayer'),
     renderStats: document.getElementById('renderStats'),
     readingBack: document.getElementById('readingBack'),
     readingForward: document.getElementById('readingForward'),
@@ -104,12 +125,17 @@
   const I18N = {
     en: {
       outline: 'Outline',
+      markdownFiles: 'Markdown Files',
+      markdownFilesLabel: 'Markdown files',
+      outlineSplitLabel: 'Resize Markdown file list and outline',
       markdown: 'Markdown',
       preview: 'HTML Preview',
       language: 'Language',
       languageTitle: 'Choose UI language',
       theme: 'Theme',
       themeTitle: 'Choose read-md-as-html theme',
+      fontSize: 'Size',
+      fontSizeTitle: 'Preview font size',
       themeReaderLight: 'Light',
       themeSoftGreen: 'Soft Green',
       themeVscode: 'VS Code',
@@ -164,6 +190,8 @@
       highlight: 'Highlight',
       bookmark: 'Bookmark',
       note: 'Note',
+      pinFileTitle: 'Keep this file at the top',
+      pinnedFile: 'Pinned',
       highlightSelection: 'Highlight selection',
       bookmarkSelection: 'Add bookmark',
       noteSelection: 'Add note',
@@ -178,6 +206,9 @@
       noNotes: 'No notes yet.',
       context: 'Context: ',
       bookmarkRail: 'Reading bookmarks',
+      railPreview: 'Position preview',
+      railPreviewEmpty: 'No previewable content near this position.',
+      marginNotesLabel: 'Margin notes',
       sectionLocation: 'Section: ',
       chapterNumber: 'Chapter: ',
       subsectionTitle: 'Title: ',
@@ -186,12 +217,17 @@
     },
     'zh-CN': {
       outline: '目录',
+      markdownFiles: 'Markdown 文件',
+      markdownFilesLabel: 'Markdown 文件列表',
+      outlineSplitLabel: '调整 Markdown 文件列表和目录高度',
       markdown: 'Markdown',
       preview: 'HTML 预览',
       language: '语言',
       languageTitle: '选择界面语言',
       theme: '主题',
       themeTitle: '选择 read-md-as-html 主题',
+      fontSize: '字号',
+      fontSizeTitle: '调整 HTML 预览字号',
       themeReaderLight: '浅色阅读',
       themeSoftGreen: '护眼',
       themeVscode: '跟随 VS Code',
@@ -246,6 +282,8 @@
       highlight: '高亮',
       bookmark: '书签',
       note: '批注',
+      pinFileTitle: '将这个文件置顶',
+      pinnedFile: '已置顶',
       highlightSelection: '高亮选中文字',
       bookmarkSelection: '加入书签',
       noteSelection: '添加文字批注',
@@ -260,6 +298,9 @@
       noNotes: '还没有批注。',
       context: '上下文：',
       bookmarkRail: '阅读书签',
+      railPreview: '位置预览',
+      railPreviewEmpty: '这个位置附近没有可预览内容。',
+      marginNotesLabel: '侧边批注',
       sectionLocation: '所在章节：',
       chapterNumber: '章节号：',
       subsectionTitle: '小标题：',
@@ -285,12 +326,19 @@
     return ['reader-light', 'soft-green', 'vscode', 'dark'].includes(theme) ? theme : 'reader-light';
   }
 
+  function validReaderFontSize(value) {
+    const size = Math.round(Number(value) || 15);
+    return Math.min(24, Math.max(12, size));
+  }
+
   function persistWebviewState() {
     if (!vscode.setState) return;
     vscode.setState(Object.assign({}, vscode.getState ? (vscode.getState() || {}) : {}, {
       theme: state.theme,
       language: state.language,
       layout: state.layout,
+      outlineFilesHeight: state.outlineFilesHeight,
+      readerFontSize: state.readerFontSize,
       sourceCollapsed: state.sourceCollapsed
     }));
   }
@@ -302,6 +350,13 @@
     if (els.themeSelect) els.themeSelect.value = state.theme;
     persistWebviewState();
     if (!options.silent) post({ type: 'updateTheme', theme: state.theme });
+  }
+
+  function applyReaderFontSize(value) {
+    state.readerFontSize = validReaderFontSize(value);
+    document.documentElement.style.setProperty('--preview-font-size', state.readerFontSize + 'px');
+    if (els.fontSizeSelect) els.fontSizeSelect.value = String(state.readerFontSize);
+    persistWebviewState();
   }
 
   function setText(element, text) {
@@ -341,10 +396,12 @@
     if (els.languageSelect) els.languageSelect.value = state.language;
 
     setText(els.outlineTitle, t('outline'));
+    setText(els.fileListTitle, t('markdownFiles'));
     setText(els.sourceTitle, t('markdown'));
     setText(els.previewTitle, t('preview'));
     setText(els.languageLabel, t('language'));
     setText(els.themeLabel, t('theme'));
+    setText(els.fontSizeLabel, t('fontSize'));
     setText(els.saveDocument, t('save'));
     setText(els.togglePreviewEdit, t('edit'));
     setText(els.exportHtml, t('export'));
@@ -359,6 +416,7 @@
 
     setTitle(els.languageControl, t('languageTitle'));
     setTitle(els.themeControl, t('themeTitle'));
+    setTitle(els.fontSizeControl, t('fontSizeTitle'));
     setTitle(els.saveDocument, t('saveTitle'));
     setTitle(els.togglePreviewEdit, t('editTitle'));
     setTitle(els.exportHtml, t('exportTitle'));
@@ -376,8 +434,11 @@
 
     document.querySelector('[data-resize-handle="outline-source"]')?.setAttribute('aria-label', t('outlineResizeLabel'));
     document.querySelector('[data-resize-handle="source-preview"]')?.setAttribute('aria-label', t('previewResizeLabel'));
+    els.markdownFileList.setAttribute('aria-label', t('markdownFilesLabel'));
+    els.outlineSplitHandle.setAttribute('aria-label', t('outlineSplitLabel'));
     els.previewToc.setAttribute('aria-label', t('previewTocLabel'));
     els.previewNotes.setAttribute('aria-label', t('previewNotesLabel'));
+    els.noteMarginPanel.setAttribute('aria-label', t('marginNotesLabel'));
     els.bookmarkRail.setAttribute('aria-label', t('bookmarkRail'));
     els.lightboxToolbar.setAttribute('aria-label', t('imageControls'));
 
@@ -390,9 +451,11 @@
     updateSourceStatus();
     updateRenderStats();
     updatePreviewModeStatus();
+    renderMarkdownFiles();
     if (state.blocks.length) state.sectionPreviews = collectSectionPreviews(state.blocks);
     renderOutlines();
     renderNotesPanel();
+    scheduleNoteMarginRender();
     bindDiagramClicks();
     persistWebviewState();
     if (!options.silent) post({ type: 'updateLanguage', language: state.language });
@@ -412,6 +475,7 @@
 
   function applyLayout() {
     document.documentElement.style.setProperty('--outline-width', Math.round(state.layout.outline) + 'px');
+    document.documentElement.style.setProperty('--outline-files-height', Math.round(state.outlineFilesHeight) + 'px');
     document.documentElement.style.setProperty('--source-width', Math.round(state.layout.source) + 'px');
   }
 
@@ -442,6 +506,9 @@
   function constrainLayout(nextOutline, nextSource) {
     const shell = document.querySelector('.studio-shell');
     const shellWidth = shell ? shell.clientWidth : window.innerWidth;
+    if (!Number.isFinite(shellWidth) || shellWidth < 360) {
+      return { outline: state.layout.outline, source: state.layout.source };
+    }
     const hiddenSource = sourceIsHidden();
     const minOutline = 170;
     const minSource = 300;
@@ -465,6 +532,61 @@
     state.layout = constrainLayout(nextOutline, nextSource);
     applyLayout();
     if (shouldPersist) persistWebviewState();
+  }
+
+  function setOutlineFilesHeight(nextHeight, shouldPersist = true) {
+    const pane = document.querySelector('.outline-pane');
+    const paneHeight = pane ? pane.clientHeight : window.innerHeight;
+    if (!Number.isFinite(paneHeight) || paneHeight < 240) {
+      applyLayout();
+      return;
+    }
+    const minFiles = 92;
+    const minOutline = 92;
+    const handleHeight = 9;
+    const maxFiles = Math.max(minFiles, paneHeight - minOutline - handleHeight);
+    state.outlineFilesHeight = clamp(Math.round(Number(nextHeight) || minFiles), minFiles, maxFiles);
+    applyLayout();
+    if (shouldPersist) persistWebviewState();
+  }
+
+  function setupOutlineSplitter() {
+    if (!els.outlineSplitHandle) return;
+    els.outlineSplitHandle.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const startY = event.clientY;
+      const startHeight = state.outlineFilesHeight;
+      document.body.classList.add('resizing-outline-split');
+      els.outlineSplitHandle.setPointerCapture(event.pointerId);
+
+      const onPointerMove = moveEvent => {
+        setOutlineFilesHeight(startHeight + moveEvent.clientY - startY, false);
+      };
+
+      const finishResize = finishEvent => {
+        document.body.classList.remove('resizing-outline-split');
+        els.outlineSplitHandle.removeEventListener('pointermove', onPointerMove);
+        els.outlineSplitHandle.removeEventListener('pointerup', finishResize);
+        els.outlineSplitHandle.removeEventListener('pointercancel', finishResize);
+        try {
+          els.outlineSplitHandle.releasePointerCapture(finishEvent.pointerId);
+        } catch (error) {
+          // The VS Code webview may release the pointer before this handler runs.
+        }
+        persistWebviewState();
+      };
+
+      els.outlineSplitHandle.addEventListener('pointermove', onPointerMove);
+      els.outlineSplitHandle.addEventListener('pointerup', finishResize);
+      els.outlineSplitHandle.addEventListener('pointercancel', finishResize);
+    });
+
+    els.outlineSplitHandle.addEventListener('keydown', event => {
+      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+      event.preventDefault();
+      setOutlineFilesHeight(state.outlineFilesHeight + (event.key === 'ArrowDown' ? 18 : -18));
+    });
   }
 
   function setupResizers() {
@@ -522,7 +644,7 @@
       });
     });
 
-    window.addEventListener('resize', () => setLayout(state.layout.outline, state.layout.source, false));
+    window.addEventListener('resize', () => applyLayout());
   }
 
   function escapeHtml(value) {
@@ -923,7 +1045,48 @@
     return '<section' + idAttr + ' class="' + classes + '"' + attrs + '>' + renderMarkdownFragment(renderRaw, block.type) + '</section>';
   }
 
-  async function renderPreview() {
+  function refreshPreviewBlockCache() {
+    state.blockElements = Array.from(els.preview.querySelectorAll('.md-block[data-block-index]'));
+    state.blockElementByIndex = new Map();
+    state.blockElementBySourceStart = new Map();
+    for (const element of state.blockElements) {
+      const index = Number(element.dataset.blockIndex);
+      const sourceStart = Number(element.dataset.sourceStart);
+      if (Number.isFinite(index)) state.blockElementByIndex.set(index, element);
+      if (Number.isFinite(sourceStart)) state.blockElementBySourceStart.set(sourceStart, element);
+    }
+  }
+
+  function previewBlockElementByIndex(index) {
+    return state.blockElementByIndex.get(Number(index)) || null;
+  }
+
+  function previewBlockElementBySourceStart(sourceStart) {
+    return state.blockElementBySourceStart.get(Number(sourceStart)) || null;
+  }
+
+  function blockElementAtScrollTop(top, offset = 24) {
+    const blocks = state.blockElements;
+    if (!blocks.length) return null;
+    const targetTop = normalizedPreviewScrollTop(top) + offset;
+    let low = 0;
+    let high = blocks.length - 1;
+    let best = blocks[0];
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      const element = blocks[mid];
+      if (element.offsetTop <= targetTop) {
+        best = element;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return best;
+  }
+
+  async function renderPreview(options = {}) {
+    const renderVersion = ++state.renderVersion;
     initLibraries();
     const sourceMarkdown = markdownForRender();
     state.refs = collectReferences(sourceMarkdown);
@@ -931,14 +1094,26 @@
     state.sectionPreviews = collectSectionPreviews(state.blocks);
     els.preview.classList.remove('empty');
     els.preview.innerHTML = state.blocks.map(block => renderBlock(block)).join('\n') || '<div class="empty-state"><h1>' + escapeHtml(t('emptyDocument')) + '</h1></div>';
+    refreshPreviewBlockCache();
+    if (options.initialProgress) {
+      els.previewScroller.scrollTop = topForReadingProgress(options.initialProgress);
+    }
     updateRenderStats();
+    renderMarkdownFiles();
     renderOutlines();
     postProcessPreview();
     await runRenderers();
+    if (renderVersion !== state.renderVersion) return false;
+    refreshPreviewBlockCache();
+    if (options.initialProgress) {
+      els.previewScroller.scrollTop = topForReadingProgress(options.initialProgress);
+    }
     applyAnnotations();
-    updateBookmarkMarkers();
+    scheduleBookmarkMarkersUpdate();
     renderNotesPanel();
+    scheduleNoteMarginRender();
     scheduleDiagramBinding();
+    return true;
   }
 
   function initLibraries() {
@@ -1059,6 +1234,106 @@
     renderOutlineList(els.previewTocNav, headings);
   }
 
+  function renderMarkdownFiles() {
+    if (!els.markdownFileList) return;
+    els.markdownFileList.innerHTML = '';
+    const files = Array.isArray(state.markdownFiles) ? state.markdownFiles : [];
+    if (!files.length) {
+      const empty = document.createElement('div');
+      empty.className = 'pane-subtitle';
+      empty.textContent = state.fileName || t('emptyDocument');
+      els.markdownFileList.appendChild(empty);
+      return;
+    }
+    for (const file of files) {
+      const row = document.createElement('div');
+      row.className = 'markdown-file-row' + (file.uri === state.uri || file.active ? ' active' : '') + (file.pinned ? ' pinned' : '');
+
+      const pin = document.createElement('input');
+      pin.type = 'checkbox';
+      pin.className = 'markdown-file-pin';
+      pin.checked = !!file.pinned;
+      pin.title = t('pinFileTitle');
+      pin.setAttribute('aria-label', t('pinFileTitle'));
+      pin.addEventListener('click', event => event.stopPropagation());
+      pin.addEventListener('change', () => setFilePinned(file.uri, pin.checked));
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'markdown-file-item';
+      button.title = (file.pinned ? t('pinnedFile') + ': ' : '') + (file.name || '');
+      button.dataset.uri = file.uri || '';
+      const label = document.createElement('span');
+      label.textContent = file.name || 'document.md';
+      button.appendChild(label);
+      button.addEventListener('click', () => switchMarkdownFile(file.uri));
+      row.append(pin, button);
+      els.markdownFileList.appendChild(row);
+    }
+  }
+
+  function sortMarkdownFiles(files) {
+    return files.slice().sort((a, b) => {
+      if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+      if (a.pinned && b.pinned && Number(a.pinRank) !== Number(b.pinRank)) {
+        return Number(a.pinRank) - Number(b.pinRank);
+      }
+      if (Number(b.mtime) !== Number(a.mtime)) return Number(b.mtime) - Number(a.mtime);
+      return String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base', numeric: true });
+    });
+  }
+
+  function setFilePinned(targetUri, pinned) {
+    if (!targetUri) return;
+    const files = Array.isArray(state.markdownFiles) ? state.markdownFiles : [];
+    if (pinned) {
+      state.markdownFiles = files.map(file => {
+        if (file.uri === targetUri) return Object.assign({}, file, { pinned: true, pinRank: 0 });
+        if (file.pinned) return Object.assign({}, file, { pinRank: Math.max(1, Number(file.pinRank) + 1 || 1) });
+        return file;
+      });
+    } else {
+      state.markdownFiles = files.map(file => file.uri === targetUri ? Object.assign({}, file, { pinned: false, pinRank: -1 }) : file);
+    }
+    state.markdownFiles = sortMarkdownFiles(state.markdownFiles);
+    renderMarkdownFiles();
+    post({
+      type: 'setFilePinned',
+      uri: state.uri,
+      targetUri,
+      pinned: !!pinned
+    });
+  }
+
+  function switchMarkdownFile(targetUri) {
+    if (!targetUri || targetUri === state.uri) return;
+    pushReadingPosition(els.previewScroller.scrollTop, { force: true });
+    requestDocumentSwitch(targetUri, { recordTarget: true });
+  }
+
+  function requestDocumentSwitch(targetUri, options = {}) {
+    if (!targetUri || targetUri === state.uri) return;
+    clearTimeout(state.renderTimer);
+    clearTimeout(state.saveTimer);
+    clearTimeout(state.patchTimer);
+    clearTimeout(state.readingHistoryTimer);
+    saveReadingProgressNow();
+    state.pendingDocumentSwitch = {
+      targetUri,
+      restoreProgress: options.restoreProgress || null,
+      recordTarget: !!options.recordTarget,
+      historyNavigation: !!options.historyNavigation
+    };
+    post({
+      type: 'switchDocument',
+      uri: state.uri,
+      targetUri,
+      markdown: state.markdown,
+      readingProgress: captureReadingProgress()
+    });
+    setStatus(t('liveRender'));
+  }
+
   function renderOutlineList(container, headings) {
     container.innerHTML = '';
     if (!headings.length) {
@@ -1122,7 +1397,12 @@
     };
   }
 
-  function annotationHoverContent(annotation, anchor) {
+  function compactNoteHoverMode() {
+    if (!els.previewPane) return false;
+    return els.previewPane.classList.contains('hide-margin-notes') || els.previewPane.clientWidth < 520;
+  }
+
+  function annotationHoverContent(annotation, anchor, options = {}) {
     const section = annotationSectionInfo(annotation);
     const fromRail = anchor && anchor.classList && anchor.classList.contains('annotation-marker');
     const label = annotation.type === 'bookmark' ? t('readingBookmark') : annotation.type === 'note' ? t('readingNote') : t('readingHighlight');
@@ -1138,7 +1418,7 @@
     if (annotation.context) {
       parts.push('<div class="hover-body"><strong>' + escapeHtml(t('context')) + '</strong>' + escapeHtml(annotation.context) + '</div>');
     }
-    if (annotation.note) {
+    if (annotation.note && (annotation.type !== 'note' || options.includeNoteBody)) {
       parts.push('<div class="hover-body hover-note"><strong>' + escapeHtml(t('noteBody')) + '</strong>' + escapeHtml(annotation.note) + '</div>');
     }
     parts.push(
@@ -1170,7 +1450,10 @@
     if (annotationId) {
       const annotation = state.annotations.find(entry => entry.id === annotationId);
       if (!annotation) return null;
-      return annotationHoverContent(annotation, anchor);
+      const fromRail = anchor.classList && anchor.classList.contains('annotation-marker');
+      const compactNote = annotation.type === 'note' && compactNoteHoverMode();
+      if (annotation.type === 'note' && !fromRail && !compactNote) return null;
+      return annotationHoverContent(annotation, anchor, { includeNoteBody: compactNote });
     }
     if (targetId && state.sectionPreviews.has(targetId)) {
       const section = state.sectionPreviews.get(targetId);
@@ -1183,14 +1466,12 @@
     return null;
   }
 
-  function showHovercard(anchor) {
-    const html = hoverContentFor(anchor);
+  function showHovercardAt(html, rect) {
     if (!html) return;
     clearTimeout(state.hoverTimer);
     els.hovercard.innerHTML = html;
     els.hovercard.classList.add('visible');
     els.hovercard.setAttribute('aria-hidden', 'false');
-    const rect = anchor.getBoundingClientRect();
     const cardRect = els.hovercard.getBoundingClientRect();
     let left = rect.left;
     let top = rect.bottom + 10;
@@ -1198,6 +1479,12 @@
     if (top + cardRect.height > window.innerHeight - 14) top = Math.max(14, rect.top - cardRect.height - 10);
     els.hovercard.style.left = Math.max(14, left) + 'px';
     els.hovercard.style.top = Math.max(14, top) + 'px';
+  }
+
+  function showHovercard(anchor) {
+    const html = hoverContentFor(anchor);
+    if (!html) return;
+    showHovercardAt(html, anchor.getBoundingClientRect());
   }
 
   function hideHovercardSoon() {
@@ -1415,8 +1702,9 @@
     const selection = window.getSelection();
     if (selection) selection.removeAllRanges();
     applyAnnotations();
-    updateBookmarkMarkers();
+    scheduleBookmarkMarkersUpdate();
     renderNotesPanel();
+    scheduleNoteMarginRender();
   }
 
   function confirmNoteAnnotation() {
@@ -1430,8 +1718,9 @@
     saveAnnotations();
     hideHovercardNow();
     applyAnnotations();
-    updateBookmarkMarkers();
+    scheduleBookmarkMarkersUpdate();
     renderNotesPanel();
+    scheduleNoteMarginRender();
   }
 
   function clearAnnotationMarks() {
@@ -1448,12 +1737,12 @@
     if (!annotation) return null;
     const sourceStart = Number(annotation.sourceStart);
     if (Number.isFinite(sourceStart) && sourceStart >= 0) {
-      const byLine = els.preview.querySelector('.md-block[data-source-start="' + sourceStart + '"]');
+      const byLine = previewBlockElementBySourceStart(sourceStart);
       if (byLine) return byLine;
     }
     const blockIndex = Number(annotation.blockIndex);
     if (Number.isFinite(blockIndex) && blockIndex >= 0) {
-      return els.preview.querySelector('.md-block[data-block-index="' + blockIndex + '"]');
+      return previewBlockElementByIndex(blockIndex);
     }
     return null;
   }
@@ -1554,12 +1843,115 @@
     scheduleReadingProgressSave(120);
   }
 
+  function blockForPreviewTop(top) {
+    const blockEl = blockElementAtScrollTop(top, 24);
+    if (!blockEl) return null;
+    const blockIndex = Number(blockEl.dataset.blockIndex);
+    const block = state.blocks[blockIndex];
+    return block ? { block, element: blockEl } : null;
+  }
+
+  function railPreviewContent(targetTop) {
+    const match = blockForPreviewTop(targetTop);
+    if (!match || !match.block) {
+      return [
+        '<div class="hover-kicker">' + escapeHtml(t('railPreview')) + '</div>',
+        '<div class="hover-body">' + escapeHtml(t('railPreviewEmpty')) + '</div>'
+      ].join('');
+    }
+    const section = annotationSectionInfo({
+      blockIndex: match.block.index,
+      sourceStart: match.block.start
+    });
+    const title = section ? section.title : (match.block.headingTitle || t('untitledSection'));
+    const body = stripMarkdown(match.block.raw).slice(0, 620) || t('railPreviewEmpty');
+    return [
+      '<div class="hover-kicker">' + escapeHtml(t('railPreview')) + '</div>',
+      '<div class="hover-title">' + escapeHtml(title) + '</div>',
+      '<div class="hover-body">' + escapeHtml(body) + '</div>'
+    ].join('');
+  }
+
+  function handleRailMouseMove(event) {
+    if (!els.bookmarkRail || event.target.closest('.annotation-marker')) return;
+    state.lastRailPreviewEvent = { clientX: event.clientX, clientY: event.clientY };
+    if (state.railPreviewRaf) return;
+    state.railPreviewRaf = window.requestAnimationFrame(() => {
+      state.railPreviewRaf = 0;
+      const point = state.lastRailPreviewEvent;
+      if (!point) return;
+      showRailPreviewAt(point.clientX, point.clientY);
+    });
+  }
+
+  function showRailPreviewAt(clientX, clientY) {
+    const targetTop = railTargetTopFromPoint(clientY);
+    showHovercardAt(railPreviewContent(targetTop), {
+      left: clientX - 6,
+      right: clientX + 6,
+      top: clientY - 6,
+      bottom: clientY + 6,
+      width: 12,
+      height: 12
+    });
+  }
+
+  function railTargetTopFromEvent(event) {
+    return railTargetTopFromPoint(event.clientY);
+  }
+
+  function railTargetTopFromPoint(clientY) {
+    const rect = els.bookmarkRail.getBoundingClientRect();
+    const ratio = rect.height > 0 ? clamp((clientY - rect.top) / rect.height, 0, 1) : 0;
+    return maxPreviewScrollTop() * ratio;
+  }
+
+  function handleRailClick(event) {
+    if (!els.bookmarkRail || event.target.closest('.annotation-marker')) return;
+    event.preventDefault();
+    beginPreviewScrollIntent();
+    setPreviewScrollTop(railTargetTopFromEvent(event), { recordCurrent: true, recordTarget: true });
+    scheduleScrollSync('preview');
+    scheduleReadingProgressSave(120);
+    scheduleReadingHistoryCapture();
+    scheduleNoteMarginRender();
+  }
+
+  function handleRailWheel(event) {
+    if (!els.previewScroller) return;
+    event.preventDefault();
+    beginPreviewScrollIntent();
+    els.previewScroller.scrollTop = normalizedPreviewScrollTop(els.previewScroller.scrollTop + event.deltaY);
+    scheduleScrollSync('preview');
+    scheduleReadingProgressSave();
+    scheduleReadingHistoryCapture();
+    scheduleNoteMarginRender();
+  }
+
+  function handleRailMouseLeave() {
+    state.lastRailPreviewEvent = null;
+    if (state.railPreviewRaf) {
+      window.cancelAnimationFrame(state.railPreviewRaf);
+      state.railPreviewRaf = 0;
+    }
+    hideHovercardSoon();
+  }
+
+  function scheduleBookmarkMarkersUpdate() {
+    if (state.bookmarkMarkersRaf) return;
+    state.bookmarkMarkersRaf = window.requestAnimationFrame(() => {
+      state.bookmarkMarkersRaf = 0;
+      updateBookmarkMarkers();
+    });
+  }
+
   function updateBookmarkMarkers() {
     if (!els.bookmarkRail) return;
+    const railHeight = els.bookmarkRail.clientHeight || els.previewScroller.clientHeight;
+    if (railHeight < 80 || (els.previewPane && els.previewPane.clientWidth < 320)) return;
     els.bookmarkRail.innerHTML = '';
     const railAnnotations = sanitizeClientAnnotations(state.annotations).filter(annotation => annotation.type === 'bookmark' || annotation.type === 'note');
     if (!railAnnotations.length) return;
-    const railHeight = els.bookmarkRail.clientHeight || els.previewScroller.clientHeight;
     const travel = Math.max(0, railHeight - 12);
     const maxTop = maxPreviewScrollTop();
     for (const annotation of railAnnotations) {
@@ -1576,6 +1968,7 @@
       marker.addEventListener('mouseleave', hideHovercardSoon);
       marker.addEventListener('click', event => {
         event.preventDefault();
+        event.stopPropagation();
         jumpToAnnotation(annotation);
       });
       els.bookmarkRail.appendChild(marker);
@@ -1632,10 +2025,116 @@
     }
   }
 
+  function renderNoteMargin() {
+    if (!els.noteMarginPanel) return;
+    const notes = sanitizeClientAnnotations(state.annotations).filter(annotation => annotation.type === 'note');
+    const paneWidth = els.previewPane ? els.previewPane.clientWidth : window.innerWidth;
+    const paneHeight = els.previewScroller ? els.previewScroller.clientHeight : window.innerHeight;
+    if (paneWidth < 320 || paneHeight < 120) return;
+    els.noteMarginPanel.innerHTML = '';
+    if (els.noteConnectorLayer) els.noteConnectorLayer.innerHTML = '';
+    const showMarginNotes = notes.length > 0 && paneWidth >= 520;
+    if (els.previewPane) {
+      els.previewPane.classList.toggle('has-margin-notes', showMarginNotes);
+      els.previewPane.classList.toggle('hide-margin-notes', notes.length > 0 && !showMarginNotes);
+    }
+    if (!showMarginNotes) return;
+    prepareNoteConnectorLayer();
+    const panelHeight = els.noteMarginPanel.clientHeight || els.previewScroller.clientHeight;
+    const visibleTopMin = -180;
+    const visibleTopMax = panelHeight + 100;
+    let lastTop = -Infinity;
+    for (const annotation of notes) {
+      const targetTop = annotationTargetTop(annotation);
+      const visibleTop = targetTop - els.previewScroller.scrollTop;
+      if (visibleTop < visibleTopMin || visibleTop > visibleTopMax) continue;
+      const card = document.createElement('article');
+      card.className = 'note-margin-card';
+      card.dataset.annotationId = annotation.id;
+      const section = annotationSectionInfo(annotation);
+      const meta = document.createElement('div');
+      meta.className = 'note-margin-meta';
+      meta.textContent = section ? section.title : t('readingNote');
+      const quote = document.createElement('button');
+      quote.type = 'button';
+      quote.className = 'note-margin-quote';
+      quote.textContent = annotation.text || t('untitledSection');
+      quote.addEventListener('click', () => jumpToAnnotation(annotation));
+      const body = document.createElement('div');
+      body.className = 'note-margin-body';
+      body.textContent = annotation.note || '';
+      const actions = document.createElement('div');
+      actions.className = 'note-margin-actions';
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.textContent = t('deleteAnnotation');
+      remove.title = t('deleteAnnotationTitle');
+      remove.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        deleteAnnotation(annotation.id);
+      });
+      actions.appendChild(remove);
+      card.append(meta, quote, body, actions);
+      const rawTop = clamp(Math.round(visibleTop), 8, Math.max(8, panelHeight - 120));
+      const top = Math.max(rawTop, lastTop + 12);
+      card.style.top = Math.min(top, Math.max(8, panelHeight - 72)) + 'px';
+      lastTop = top + 72;
+      els.noteMarginPanel.appendChild(card);
+      drawNoteConnector(annotation, card);
+    }
+  }
+
+  function scheduleNoteMarginRender() {
+    if (state.noteMarginRaf) return;
+    state.noteMarginRaf = window.requestAnimationFrame(() => {
+      state.noteMarginRaf = 0;
+      renderNoteMargin();
+    });
+  }
+
+  function prepareNoteConnectorLayer() {
+    if (!els.noteConnectorLayer) return;
+    const rect = els.noteConnectorLayer.getBoundingClientRect();
+    els.noteConnectorLayer.setAttribute('viewBox', '0 0 ' + Math.max(1, Math.round(rect.width)) + ' ' + Math.max(1, Math.round(rect.height)));
+  }
+
+  function drawNoteConnector(annotation, card) {
+    if (!els.noteConnectorLayer || !card) return;
+    const target = targetAnnotationElement(annotation);
+    if (!target) return;
+    const layerRect = els.noteConnectorLayer.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const cardRect = card.getBoundingClientRect();
+    if (targetRect.bottom < layerRect.top || targetRect.top > layerRect.bottom) return;
+    const startX = clamp(targetRect.right - layerRect.left + 2, 0, layerRect.width);
+    const startY = clamp(targetRect.top + targetRect.height / 2 - layerRect.top, 0, layerRect.height);
+    const endX = clamp(cardRect.left - layerRect.left + 2, 0, layerRect.width);
+    const endY = clamp(cardRect.top + Math.min(26, Math.max(12, cardRect.height / 2)) - layerRect.top, 0, layerRect.height);
+    const bend = Math.max(28, Math.min(110, Math.abs(endX - startX) * 0.45));
+    const c1X = startX + bend;
+    const c2X = Math.max(startX + bend, endX - bend);
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.classList.add('note-connector-path');
+    path.setAttribute('d', 'M ' + startX.toFixed(1) + ' ' + startY.toFixed(1) +
+      ' C ' + c1X.toFixed(1) + ' ' + startY.toFixed(1) +
+      ', ' + c2X.toFixed(1) + ' ' + endY.toFixed(1) +
+      ', ' + endX.toFixed(1) + ' ' + endY.toFixed(1));
+    const startDot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    startDot.classList.add('note-connector-dot');
+    startDot.setAttribute('cx', startX.toFixed(1));
+    startDot.setAttribute('cy', startY.toFixed(1));
+    startDot.setAttribute('r', '2.5');
+    els.noteConnectorLayer.append(path, startDot);
+  }
+
   function bindImageClicks() {
     els.preview.querySelectorAll('img.doc-image').forEach(img => {
       img.addEventListener('click', () => openLightboxSource(img.currentSrc || img.src, img.alt || ''));
-      img.addEventListener('load', updateBookmarkMarkers);
+      img.addEventListener('load', () => {
+        scheduleBookmarkMarkersUpdate();
+        scheduleNoteMarginRender();
+      });
     });
   }
 
@@ -1797,28 +2296,14 @@
   }
 
   function visiblePreviewBlock() {
-    const blocks = Array.from(els.preview.querySelectorAll('.md-block[data-source-start]'));
-    if (!blocks.length) return null;
-    const scrollerRect = els.previewScroller.getBoundingClientRect();
-    let best = blocks[0];
-    let bestDistance = Infinity;
-    for (const block of blocks) {
-      const rect = block.getBoundingClientRect();
-      if (rect.bottom < scrollerRect.top) continue;
-      const distance = Math.abs(rect.top - scrollerRect.top - 12);
-      if (distance < bestDistance) {
-        best = block;
-        bestDistance = distance;
-      }
-      if (rect.top > scrollerRect.top + scrollerRect.height * 0.45) break;
-    }
-    return best;
+    return blockElementAtScrollTop(els.previewScroller.scrollTop, 12);
   }
 
   function captureReadingProgress(top = els.previewScroller.scrollTop) {
     const scrollTop = normalizedPreviewScrollTop(top);
     const maxTop = maxPreviewScrollTop();
-    const blockEl = visiblePreviewBlock();
+    const blockMatch = Math.abs(scrollTop - els.previewScroller.scrollTop) <= 2 ? null : blockForPreviewTop(scrollTop);
+    const blockEl = blockMatch && blockMatch.element ? blockMatch.element : visiblePreviewBlock();
     const sourceStart = blockEl ? Number(blockEl.dataset.sourceStart) : -1;
     const blockIndex = blockEl ? Number(blockEl.dataset.blockIndex) : -1;
     return {
@@ -1831,16 +2316,38 @@
     };
   }
 
+  function readingHistoryEntry(top = els.previewScroller.scrollTop) {
+    return {
+      uri: state.uri,
+      fileName: state.fileName,
+      progress: captureReadingProgress(top)
+    };
+  }
+
+  function entryProgressTop(entry) {
+    return Math.max(0, Math.round(Number(entry && entry.progress && entry.progress.top) || 0));
+  }
+
+  function updateCurrentHistoryEntry(progress = captureReadingProgress()) {
+    if (state.readingHistoryIndex < 0 || state.readingHistoryIndex >= state.readingHistory.length) return;
+    const current = state.readingHistory[state.readingHistoryIndex];
+    if (!current || current.uri !== state.uri) return;
+    state.readingHistory[state.readingHistoryIndex] = Object.assign({}, current, {
+      fileName: state.fileName,
+      progress
+    });
+  }
+
   function progressBlockElement(progress) {
     if (!progress) return null;
     const sourceStart = Number(progress.sourceStart);
     if (Number.isFinite(sourceStart) && sourceStart >= 0) {
-      const byLine = els.preview.querySelector('.md-block[data-source-start="' + sourceStart + '"]');
+      const byLine = previewBlockElementBySourceStart(sourceStart);
       if (byLine) return byLine;
     }
     const blockIndex = Number(progress.blockIndex);
     if (Number.isFinite(blockIndex) && blockIndex >= 0) {
-      return els.preview.querySelector('.md-block[data-block-index="' + blockIndex + '"]');
+      return previewBlockElementByIndex(blockIndex);
     }
     return null;
   }
@@ -1858,12 +2365,13 @@
     return normalizedPreviewScrollTop(progress.top || 0);
   }
 
-  function restoreReadingProgress(progress) {
+  function restoreReadingProgress(progress, options = {}) {
     const target = topForReadingProgress(progress);
-    resetReadingHistory(target);
+    if (options.resetHistory) resetReadingHistory(target);
     setPreviewScrollTop(target);
     window.setTimeout(() => setPreviewScrollTop(topForReadingProgress(progress)), 120);
     window.setTimeout(() => setPreviewScrollTop(topForReadingProgress(progress)), 600);
+    updateReadingNavButtons();
   }
 
   function saveReadingProgressNow() {
@@ -1872,6 +2380,7 @@
     if (serialized === state.lastSavedReadingProgress) return;
     state.lastSavedReadingProgress = serialized;
     state.readingProgress = progress;
+    updateCurrentHistoryEntry(progress);
     post({ type: 'updateReadingProgress', uri: state.uri, progress });
   }
 
@@ -1906,7 +2415,7 @@
     const line = lineFromEditorScroll();
     const block = blockForLine(line);
     if (!block) return;
-    const blockEl = els.preview.querySelector('.md-block[data-block-index="' + block.index + '"]');
+    const blockEl = previewBlockElementByIndex(block.index);
     if (!blockEl) return;
     state.scrollSyncLock = 'source';
     setPreviewScrollTop(blockEl.offsetTop - els.previewScroller.clientHeight * 0.12);
@@ -1936,11 +2445,13 @@
   }
 
   function pushReadingPosition(top = els.previewScroller.scrollTop, options = {}) {
-    const nextTop = normalizedPreviewScrollTop(top);
+    const next = readingHistoryEntry(top);
+    const nextTop = entryProgressTop(next);
     const minDelta = options.force ? 24 : Math.max(180, Math.round(els.previewScroller.clientHeight * 0.35));
     if (state.readingHistoryIndex >= 0) {
-      const currentTop = state.readingHistory[state.readingHistoryIndex];
-      if (Math.abs(currentTop - nextTop) < minDelta) {
+      const current = state.readingHistory[state.readingHistoryIndex];
+      const currentTop = entryProgressTop(current);
+      if (current && current.uri === next.uri && Math.abs(currentTop - nextTop) < minDelta) {
         updateReadingNavButtons();
         return false;
       }
@@ -1948,7 +2459,7 @@
     if (state.readingHistoryIndex < state.readingHistory.length - 1) {
       state.readingHistory = state.readingHistory.slice(0, state.readingHistoryIndex + 1);
     }
-    state.readingHistory.push(nextTop);
+    state.readingHistory.push(next);
     if (state.readingHistory.length > 80) state.readingHistory.shift();
     state.readingHistoryIndex = state.readingHistory.length - 1;
     updateReadingNavButtons();
@@ -1959,7 +2470,7 @@
     clearTimeout(state.readingHistoryTimer);
     state.previewScrollIntent = false;
     state.readingHistoryApplying = true;
-    state.readingHistory = [normalizedPreviewScrollTop(top)];
+    state.readingHistory = [readingHistoryEntry(top)];
     state.readingHistoryIndex = 0;
     updateReadingNavButtons();
     setTimeout(() => { state.readingHistoryApplying = false; }, 240);
@@ -1977,9 +2488,22 @@
   function navigateReadingHistory(delta) {
     const nextIndex = state.readingHistoryIndex + delta;
     if (nextIndex < 0 || nextIndex >= state.readingHistory.length) return;
+    updateCurrentHistoryEntry();
+    const entry = state.readingHistory[nextIndex];
+    if (!entry || !entry.progress) return;
     state.readingHistoryIndex = nextIndex;
     state.previewScrollIntent = false;
-    setPreviewScrollTop(state.readingHistory[nextIndex]);
+    if (entry.uri && entry.uri !== state.uri) {
+      state.readingHistoryApplying = true;
+      requestDocumentSwitch(entry.uri, {
+        restoreProgress: entry.progress,
+        recordTarget: false,
+        historyNavigation: true
+      });
+      updateReadingNavButtons();
+      return;
+    }
+    setPreviewScrollTop(topForReadingProgress(entry.progress));
     updateReadingNavButtons();
     scheduleScrollSync('preview');
     scheduleReadingProgressSave(120);
@@ -2001,7 +2525,7 @@
   }
 
   function jumpToPreviewBlock(blockIndex) {
-    const blockEl = els.preview.querySelector('.md-block[data-block-index="' + blockIndex + '"]');
+    const blockEl = previewBlockElementByIndex(blockIndex);
     if (!blockEl) return;
     state.scrollSyncLock = 'source';
     setPreviewScrollTop(blockEl.offsetTop - 24, { recordCurrent: true, recordTarget: true });
@@ -2136,18 +2660,41 @@
   function handleHostMessage(message) {
     if (!message || typeof message.type !== 'string') return;
     if (message.type === 'documentLoaded' || message.type === 'documentChanged') {
-      if (message.uri !== state.uri) return;
+      if (message.type === 'documentChanged' && message.uri !== state.uri) return;
+      const pendingSwitch = message.type === 'documentLoaded' && state.pendingDocumentSwitch && state.pendingDocumentSwitch.targetUri === message.uri
+        ? state.pendingDocumentSwitch
+        : null;
       const restoreProgress = message.type === 'documentLoaded'
-        ? (message.readingProgress || state.readingProgress)
+        ? ((pendingSwitch && pendingSwitch.restoreProgress) || message.readingProgress || state.readingProgress)
         : captureReadingProgress();
+      if (message.type === 'documentLoaded') {
+        state.uri = message.uri || state.uri;
+        state.fileName = message.fileName || state.fileName;
+        state.imageMap = new Map();
+        state.pendingImageTarget = null;
+        state.activeBlockIndex = null;
+        if (pendingSwitch) state.pendingDocumentSwitch = null;
+      }
       state.markdown = message.markdown || '';
       if (Array.isArray(message.annotations)) state.annotations = sanitizeClientAnnotations(message.annotations);
+      if (Array.isArray(message.markdownFiles)) state.markdownFiles = message.markdownFiles;
       els.editor.value = state.markdown;
       els.documentName.textContent = message.fileName || state.fileName;
       updateSourceStatus();
-      renderPreview().then(() => {
+      renderMarkdownFiles();
+      renderPreview({ initialProgress: restoreProgress }).then(rendered => {
+        if (rendered === false) return;
         state.readingProgress = restoreProgress || null;
-        restoreReadingProgress(state.readingProgress);
+        restoreReadingProgress(state.readingProgress, { resetHistory: state.readingHistory.length === 0 });
+        if (pendingSwitch && pendingSwitch.recordTarget) {
+          window.setTimeout(() => pushReadingPosition(topForReadingProgress(state.readingProgress), { force: true }), 180);
+        }
+        if (pendingSwitch && pendingSwitch.historyNavigation) {
+          window.setTimeout(() => { state.readingHistoryApplying = false; }, 260);
+        }
+        scheduleNoteMarginRender();
+        window.setTimeout(scheduleNoteMarginRender, 140);
+        window.setTimeout(scheduleNoteMarginRender, 640);
       });
     }
     if (message.type === 'imageResolved') {
@@ -2165,6 +2712,11 @@
       saveMarkdown();
       setStatus(t('imageSaved', { path: message.markdownPath }));
       state.pendingImageTarget = null;
+    }
+    if (message.type === 'markdownFilesChanged') {
+      if (message.uri !== state.uri || !Array.isArray(message.markdownFiles)) return;
+      state.markdownFiles = message.markdownFiles;
+      renderMarkdownFiles();
     }
     if (message.type === 'error') setStatus(message.message || t('operationFailed'));
   }
@@ -2185,6 +2737,9 @@
     }
     if (els.languageSelect) {
       els.languageSelect.addEventListener('change', () => applyLanguage(els.languageSelect.value));
+    }
+    if (els.fontSizeSelect) {
+      els.fontSizeSelect.addEventListener('change', () => applyReaderFontSize(els.fontSizeSelect.value));
     }
     els.previewTocToggle.addEventListener('click', togglePreviewToc);
     els.previewNotesToggle.addEventListener('click', togglePreviewNotes);
@@ -2224,6 +2779,7 @@
       hideSelectionToolbar();
       scheduleScrollSync('preview');
       scheduleReadingProgressSave();
+      scheduleNoteMarginRender();
       if (!state.readingHistoryApplying && state.scrollSyncLock !== 'source' && !state.previewScrollIntent) {
         state.previewScrollIntent = true;
       }
@@ -2272,6 +2828,12 @@
       if (anchor.contains(event.relatedTarget)) return;
       hideHovercardSoon();
     });
+    if (els.bookmarkRail) {
+      els.bookmarkRail.addEventListener('mousemove', handleRailMouseMove);
+      els.bookmarkRail.addEventListener('mouseleave', handleRailMouseLeave);
+      els.bookmarkRail.addEventListener('click', handleRailClick);
+      els.bookmarkRail.addEventListener('wheel', handleRailWheel, { passive: false });
+    }
     els.hovercard.addEventListener('mouseenter', () => clearTimeout(state.hoverTimer));
     els.hovercard.addEventListener('mouseleave', hideHovercardSoon);
     els.hovercard.addEventListener('click', event => {
@@ -2329,12 +2891,14 @@
     window.addEventListener('beforeunload', saveReadingProgressNow);
     window.addEventListener('resize', () => {
       hideSelectionToolbar();
-      updateBookmarkMarkers();
+      scheduleBookmarkMarkersUpdate();
+      scheduleNoteMarginRender();
     });
   }
 
   function bootstrap() {
     applyTheme(state.theme, { silent: true });
+    applyReaderFontSize(state.readerFontSize);
     applyLanguage(state.language, { silent: true });
     applySourceCollapsed();
     applyLayout();
@@ -2342,10 +2906,19 @@
     els.editor.value = state.markdown;
     state.annotations = sanitizeClientAnnotations(state.annotations);
     if (state.previewOnly) els.editor.disabled = true;
+    setOutlineFilesHeight(state.outlineFilesHeight, false);
+    renderMarkdownFiles();
     setupResizers();
+    setupOutlineSplitter();
     setupEvents();
     updateSourceStatus();
-    renderPreview().then(() => restoreReadingProgress(state.readingProgress));
+    renderPreview({ initialProgress: state.readingProgress }).then(rendered => {
+      if (rendered === false) return;
+      restoreReadingProgress(state.readingProgress, { resetHistory: true });
+      scheduleNoteMarginRender();
+      window.setTimeout(scheduleNoteMarginRender, 140);
+      window.setTimeout(scheduleNoteMarginRender, 640);
+    });
     post({ type: 'ready' });
   }
 

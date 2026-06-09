@@ -38,28 +38,12 @@ async function openStudio(context, uri, options) {
   );
   applyPanelIdentity(panel, mediaRoot, documentUri);
 
-  let markdown = await readText(documentUri);
-  let embedded = annotationsFromMarkdown(markdown);
-  const documentCache = await documentCacheFor(context, documentUri);
-  if (!embedded.annotations.length && documentCache.annotations.length) {
-    embedded = { markdown: markdownWithAnnotations(markdown, documentCache.annotations), annotations: documentCache.annotations };
-    markdown = embedded.markdown;
-    await writeMarkdown(documentUri, markdown);
-    await writeDocumentCache(documentUri, { readingProgress: documentCache.readingProgress, annotations: [] });
-  }
-
-  const state = {
-    documentUri,
-    markdown,
-    previewOnly: !!options.previewOnly,
-    documentCache
-  };
-  state.readingProgress = state.documentCache.readingProgress;
-  state.annotations = embedded.annotations;
+  const state = await loadDocumentState(context, documentUri, options);
 
   panel.webview.html = await webviewHtml(context, panel.webview, state);
   applyPanelIdentity(panel, mediaRoot, documentUri);
   wirePanelMessages(context, panel, state);
+  const markdownDirectoryWatcher = watchMarkdownDirectory(panel, state);
 
   const watcher = vscode.workspace.onDidChangeTextDocument((event) => {
     if (event.document.uri.toString() !== state.documentUri.toString()) return;
@@ -76,7 +60,10 @@ async function openStudio(context, uri, options) {
     });
   });
 
-  panel.onDidDispose(() => watcher.dispose());
+  panel.onDidDispose(() => {
+    watcher.dispose();
+    markdownDirectoryWatcher.dispose();
+  });
 }
 
 async function resolveMarkdownUri(uri) {
@@ -104,6 +91,91 @@ function workspaceRootFor(uri) {
   return folder ? folder.uri : null;
 }
 
+async function loadDocumentState(context, documentUri, options = {}) {
+  const markdown = await readText(documentUri);
+  const embedded = annotationsFromMarkdown(markdown);
+  const documentCache = await documentCacheFor(context, documentUri);
+  return {
+    documentUri,
+    markdown,
+    previewOnly: !!options.previewOnly,
+    documentCache,
+    readingProgress: documentCache.readingProgress,
+    annotations: embedded.annotations.length ? embedded.annotations : documentCache.annotations
+  };
+}
+
+async function markdownFilesFor(documentUri) {
+  const directory = markdownDirectoryUri(documentUri);
+  const folderState = await folderStateFor(documentUri);
+  const pinnedFiles = new Set(folderState.pinnedFiles);
+  const pinnedRank = new Map(folderState.pinnedFiles.map((name, index) => [name, index]));
+  let entries = [];
+  try {
+    entries = await vscode.workspace.fs.readDirectory(directory);
+  } catch (error) {
+    return [];
+  }
+  const markdownEntries = entries
+    .filter(([name, type]) => {
+      if (type === vscode.FileType.Directory) return false;
+      const ext = path.extname(name).toLowerCase();
+      return ext === '.md' || ext === '.markdown';
+    })
+  const files = await Promise.all(markdownEntries.map(async ([name]) => {
+      const uri = vscode.Uri.joinPath(directory, name);
+      let mtime = 0;
+      try {
+        const stat = await vscode.workspace.fs.stat(uri);
+        mtime = Number(stat.mtime) || 0;
+      } catch (error) {
+        // Ignore files that disappear while the directory is being read.
+      }
+      return {
+        name,
+        uri: uri.toString(),
+        mtime,
+        pinned: pinnedFiles.has(filePinKeyFromName(name)),
+        pinRank: pinnedRank.has(filePinKeyFromName(name)) ? pinnedRank.get(filePinKeyFromName(name)) : -1,
+        active: uri.toString() === documentUri.toString()
+      };
+    }));
+  return files.sort((a, b) => {
+    if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+    if (a.pinned && b.pinned && a.pinRank !== b.pinRank) return a.pinRank - b.pinRank;
+    if (b.mtime !== a.mtime) return b.mtime - a.mtime;
+    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true });
+  });
+}
+
+function watchMarkdownDirectory(panel, state) {
+  const directory = markdownDirectoryUri(state.documentUri);
+  const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(directory, '*.{md,markdown}'));
+  let refreshTimer;
+
+  const scheduleRefresh = () => {
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(async () => {
+      panel.webview.postMessage({
+        type: 'markdownFilesChanged',
+        uri: state.documentUri.toString(),
+        markdownFiles: await markdownFilesFor(state.documentUri)
+      });
+    }, 120);
+  };
+
+  watcher.onDidCreate(scheduleRefresh);
+  watcher.onDidDelete(scheduleRefresh);
+  watcher.onDidChange(scheduleRefresh);
+
+  return {
+    dispose() {
+      clearTimeout(refreshTimer);
+      watcher.dispose();
+    }
+  };
+}
+
 function panelTitleFor(uri) {
   return path.basename(uri.fsPath);
 }
@@ -125,6 +197,7 @@ async function webviewHtml(context, webview, state) {
     uri: state.documentUri.toString(),
     fileName: path.basename(state.documentUri.fsPath),
     markdown: state.markdown,
+    markdownFiles: await markdownFilesFor(state.documentUri),
     previewOnly: state.previewOnly,
     autoSave: vscode.workspace.getConfiguration('readMdAsHtml').get('autoSave', true),
     previewEditEnabled: vscode.workspace.getConfiguration('readMdAsHtml').get('previewEditEnabledByDefault', false),
@@ -154,6 +227,7 @@ function wirePanelMessages(context, panel, state) {
           uri: state.documentUri.toString(),
           fileName: path.basename(state.documentUri.fsPath),
           markdown: state.markdown,
+          markdownFiles: await markdownFilesFor(state.documentUri),
           readingProgress: state.readingProgress,
           annotations: state.annotations
         });
@@ -161,13 +235,50 @@ function wirePanelMessages(context, panel, state) {
       if (message.type === 'updateMarkdown') {
         if (message.uri !== state.documentUri.toString()) return;
         const nextMarkdown = String(message.markdown || '');
+        if (nextMarkdown === state.markdown && !message.saveToDisk) return;
         const embedded = annotationsFromMarkdown(nextMarkdown);
         state.annotations = embedded.annotations;
-        state.markdown = markdownWithAnnotations(nextMarkdown, state.annotations);
+        state.markdown = markdownForStorage(nextMarkdown, state.annotations);
         await writeMarkdown(state.documentUri, state.markdown);
         if (message.saveToDisk) {
           await saveOpenDocument(state.documentUri);
         }
+      }
+      if (message.type === 'switchDocument') {
+        if (message.uri !== state.documentUri.toString()) return;
+        const targetUri = vscode.Uri.parse(String(message.targetUri || ''));
+        if (!isMarkdownUri(targetUri) || path.dirname(targetUri.fsPath) !== path.dirname(state.documentUri.fsPath)) return;
+        const progress = sanitizeReadingProgress(message.readingProgress);
+        if (progress) {
+          state.readingProgress = progress;
+          await writeDocumentCache(state.documentUri, state);
+        }
+        if (typeof message.markdown === 'string') {
+          const currentMarkdown = String(message.markdown);
+          if (currentMarkdown !== state.markdown) {
+            const embedded = annotationsFromMarkdown(currentMarkdown);
+            state.annotations = embedded.annotations.length ? embedded.annotations : state.annotations;
+            state.markdown = markdownForStorage(currentMarkdown, state.annotations);
+            await writeMarkdown(state.documentUri, state.markdown);
+          }
+        }
+        const nextState = await loadDocumentState(context, targetUri, { previewOnly: state.previewOnly });
+        state.documentUri = nextState.documentUri;
+        state.markdown = nextState.markdown;
+        state.documentCache = nextState.documentCache;
+        state.readingProgress = nextState.readingProgress;
+        state.annotations = nextState.annotations;
+        const mediaRoot = vscode.Uri.joinPath(context.extensionUri, 'media');
+        applyPanelIdentity(panel, mediaRoot, state.documentUri);
+        panel.webview.postMessage({
+          type: 'documentLoaded',
+          uri: state.documentUri.toString(),
+          fileName: path.basename(state.documentUri.fsPath),
+          markdown: state.markdown,
+          markdownFiles: await markdownFilesFor(state.documentUri),
+          readingProgress: state.readingProgress,
+          annotations: state.annotations
+        });
       }
       if (message.type === 'resolveImage') {
         if (message.uri !== state.documentUri.toString()) return;
@@ -204,6 +315,21 @@ function wirePanelMessages(context, panel, state) {
           await vscode.workspace.getConfiguration('readMdAsHtml').update('language', language, vscode.ConfigurationTarget.Global);
         }
       }
+      if (message.type === 'setFilePinned') {
+        if (message.uri !== state.documentUri.toString()) return;
+        const targetUri = vscode.Uri.parse(String(message.targetUri || ''));
+        if (!isMarkdownUri(targetUri) || path.dirname(targetUri.fsPath) !== path.dirname(state.documentUri.fsPath)) return;
+        const folderState = await folderStateFor(state.documentUri);
+        const pinKey = filePinKeyFromName(path.basename(targetUri.fsPath));
+        const pinnedFiles = folderState.pinnedFiles.filter(name => name !== pinKey);
+        if (message.pinned) pinnedFiles.unshift(pinKey);
+        await writeFolderState(state.documentUri, { pinnedFiles });
+        panel.webview.postMessage({
+          type: 'markdownFilesChanged',
+          uri: state.documentUri.toString(),
+          markdownFiles: await markdownFilesFor(state.documentUri)
+        });
+      }
       if (message.type === 'updateReadingProgress') {
         if (message.uri !== state.documentUri.toString()) return;
         const progress = sanitizeReadingProgress(message.progress);
@@ -216,7 +342,7 @@ function wirePanelMessages(context, panel, state) {
       if (message.type === 'updateAnnotations') {
         if (message.uri !== state.documentUri.toString()) return;
         state.annotations = sanitizeAnnotations(message.annotations);
-        state.markdown = markdownWithAnnotations(state.markdown, state.annotations);
+        state.markdown = markdownForStorage(state.markdown, state.annotations);
         await writeMarkdown(state.documentUri, state.markdown);
         panel.webview.postMessage({
           type: 'documentChanged',
@@ -318,6 +444,20 @@ function stripAnnotationBlock(markdown) {
   return annotationsFromMarkdown(markdown).markdown;
 }
 
+function markdownWithoutAnnotationBlock(markdown) {
+  const text = String(markdown || '');
+  const match = annotationBlockPattern.exec(text);
+  if (!match) return text;
+  const base = text.slice(0, match.index).replace(/\s+$/g, '');
+  return base ? base + '\n' : '';
+}
+
+function markdownForStorage(markdown, annotations) {
+  const cleanAnnotations = sanitizeAnnotations(annotations);
+  if (cleanAnnotations.length) return markdownWithAnnotations(markdown, cleanAnnotations);
+  return markdownWithoutAnnotationBlock(markdown);
+}
+
 function markdownWithAnnotations(markdown, annotations) {
   const cleanAnnotations = sanitizeAnnotations(annotations);
   const base = stripAnnotationBlock(markdown).replace(/\s+$/g, '');
@@ -357,6 +497,10 @@ function stateCacheUri(markdownUri) {
   return vscode.Uri.joinPath(cacheDirectoryUri(markdownUri), `${fileNameSafe(path.basename(markdownUri.fsPath))}.read-md-as-html.json`);
 }
 
+function folderStateCacheUri(markdownUri) {
+  return vscode.Uri.joinPath(cacheDirectoryUri(markdownUri), 'read-md-as-html.folder.json');
+}
+
 function defaultExportHtmlUri(markdownUri) {
   const basename = path.basename(markdownUri.fsPath).replace(/\.(md|markdown)$/i, '');
   return vscode.Uri.joinPath(cacheDirectoryUri(markdownUri), `${fileNameSafe(basename)}.html`);
@@ -376,6 +520,44 @@ function sanitizeDocumentCache(cache) {
     readingProgress: sanitizeReadingProgress(cache && cache.readingProgress),
     annotations: sanitizeAnnotations(cache && cache.annotations)
   };
+}
+
+function filePinKeyFromName(name) {
+  return String(name || '').trim().toLowerCase();
+}
+
+function defaultFolderState() {
+  return {
+    version: 1,
+    pinnedFiles: []
+  };
+}
+
+function sanitizeFolderState(state) {
+  const pinnedFiles = Array.isArray(state && state.pinnedFiles) ? state.pinnedFiles : [];
+  return {
+    version: 1,
+    pinnedFiles: Array.from(new Set(pinnedFiles.map(filePinKeyFromName).filter(Boolean))).slice(0, 500)
+  };
+}
+
+async function folderStateFor(markdownUri) {
+  try {
+    return sanitizeFolderState(JSON.parse(await readText(folderStateCacheUri(markdownUri))));
+  } catch (error) {
+    return defaultFolderState();
+  }
+}
+
+async function writeFolderState(markdownUri, state) {
+  const folderState = sanitizeFolderState(state);
+  const payload = {
+    version: folderState.version,
+    updatedAt: new Date().toISOString(),
+    pinnedFiles: folderState.pinnedFiles
+  };
+  await ensureCacheDirectory(markdownUri);
+  await vscode.workspace.fs.writeFile(folderStateCacheUri(markdownUri), textEncoder.encode(JSON.stringify(payload, null, 2) + '\n'));
 }
 
 async function documentCacheFor(context, uri) {
@@ -420,7 +602,7 @@ async function writeDocumentCache(markdownUri, state) {
     updatedAt: new Date().toISOString(),
     readingProgress: cache.readingProgress
   };
-  await ensureDirectory(cacheDirectoryUri(markdownUri));
+  await ensureCacheDirectory(markdownUri);
   await vscode.workspace.fs.writeFile(stateCacheUri(markdownUri), textEncoder.encode(JSON.stringify(payload, null, 2) + '\n'));
 }
 
@@ -439,6 +621,12 @@ async function writeMarkdown(uri, markdown) {
     edit.replace(uri, fullRange, markdown);
     await vscode.workspace.applyEdit(edit);
     return;
+  }
+  try {
+    const current = await readText(uri);
+    if (current === markdown) return;
+  } catch (error) {
+    // If the file cannot be read here, let the write surface the real error.
   }
   await vscode.workspace.fs.writeFile(uri, textEncoder.encode(markdown));
 }
@@ -469,7 +657,7 @@ async function savePastedImage(webview, markdownUri, message) {
 }
 
 async function saveExportHtml(markdownUri, html) {
-  await ensureDirectory(cacheDirectoryUri(markdownUri));
+  await ensureCacheDirectory(markdownUri);
   const target = await vscode.window.showSaveDialog({
     defaultUri: defaultExportHtmlUri(markdownUri),
     filters: {
@@ -528,6 +716,25 @@ async function ensureDirectory(uri) {
   } catch (error) {
     if (!/exist/i.test(String(error && error.message))) throw error;
   }
+}
+
+async function ensureCacheDirectory(markdownUri) {
+  await ensureDirectory(cacheDirectoryUri(markdownUri));
+  await ensureParentGitignoreIgnoresCache(markdownUri);
+}
+
+async function ensureParentGitignoreIgnoresCache(markdownUri) {
+  const gitignoreUri = vscode.Uri.joinPath(markdownDirectoryUri(markdownUri), '.gitignore');
+  let current = '';
+  try {
+    current = await readText(gitignoreUri);
+  } catch (error) {
+    // Creating the ignore file is best-effort and should not block the reader.
+  }
+  if (/^(?:\.\/)?\.md\/?\s*$/m.test(current)) return;
+  const prefix = current && !current.endsWith('\n') ? '\n' : '';
+  const next = current + prefix + '.md/\n';
+  await vscode.workspace.fs.writeFile(gitignoreUri, textEncoder.encode(next));
 }
 
 function extensionFromMime(mime) {
