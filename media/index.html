@@ -125,6 +125,7 @@
       <aside id="noteMarginPanel" class="note-margin-panel" aria-label="Margin notes"></aside>
       <svg id="noteConnectorLayer" class="note-connector-layer" aria-hidden="true"></svg>
       <div id="previewScroller" class="preview-scroller" tabindex="0">
+        <nav id="sourceAxis" class="source-axis" aria-label="Markdown source line map"></nav>
         <article id="preview" class="preview empty"></article>
       </div>
       <div id="bookmarkRail" class="bookmark-rail" aria-label="Reading bookmarks"></div>
@@ -132,6 +133,14 @@
   </main>
 
   <div id="hovercard" class="hovercard" role="dialog" aria-hidden="true"></div>
+  <div id="searchBox" class="search-box" role="search" aria-hidden="true" hidden>
+    <input id="searchInput" type="search" autocomplete="off" spellcheck="false" placeholder="Search">
+    <span id="searchCount" class="search-count">0/0</span>
+    <button id="searchPrev" type="button" title="Previous match">↑</button>
+    <button id="searchNext" type="button" title="Next match">↓</button>
+    <button id="searchClose" type="button" title="Close search">×</button>
+  </div>
+  <div id="fileContextMenu" class="file-context-menu" role="menu" aria-hidden="true"></div>
   <div id="selectionToolbar" class="selection-toolbar" aria-hidden="true">
     <div class="selection-toolbar-actions">
       <button id="highlightSelection" type="button" data-annotation-action="highlight" title="Highlight selection">Highlight</button>

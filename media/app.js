@@ -6,6 +6,7 @@
   const state = {
     uri: initial.uri || '',
     fileName: initial.fileName || 'document.md',
+    documentKind: initial.documentKind || 'markdown',
     markdown: initial.markdown || '',
     committedMarkdown: initial.markdown || '',
     markdownHash: initial.markdownHash || '',
@@ -16,6 +17,7 @@
     language: persistedState.language || initial.language || 'en',
     layout: Object.assign({ outline: 300, source: 580 }, persistedState.layout || {}),
     outlineFilesHeight: Number(persistedState.outlineFilesHeight) || 190,
+    expandedFolders: persistedState.expandedFolders && typeof persistedState.expandedFolders === 'object' ? persistedState.expandedFolders : {},
     sourceCollapsed: !initial.previewOnly && (typeof persistedState.sourceCollapsed === 'boolean' ? persistedState.sourceCollapsed : true),
     readerFontSize: Number(persistedState.readerFontSize || initial.readerFontSize) || 15,
     markdownFiles: Array.isArray(initial.markdownFiles) ? initial.markdownFiles : [],
@@ -24,6 +26,9 @@
     sectionPreviews: new Map(),
     imageMap: new Map(),
     blockElements: [],
+    blockTops: [],
+    blockHeights: [],
+    blockTopByIndex: new Map(),
     blockElementByIndex: new Map(),
     blockElementBySourceStart: new Map(),
     renderTimer: null,
@@ -34,8 +39,16 @@
     patchTimer: null,
     hoverTimer: null,
     noteMarginRaf: 0,
+    noteMarginTimer: null,
+    lastNoteMarginRender: 0,
     bookmarkMarkersRaf: 0,
     railPreviewRaf: 0,
+    sourceAxisRaf: 0,
+    sourceAxisTimer: null,
+    sourceAxisActiveRaf: 0,
+    sourceAxisMarkers: new Map(),
+    activeSourceAxisMarker: null,
+    activeSourceAxisIndex: '',
     lastRailPreviewEvent: null,
     railDrag: null,
     railClickSuppressed: false,
@@ -50,8 +63,15 @@
     readingHistoryTimer: null,
     readingProgress: initial.readingProgress || null,
     readingProgressSaveTimer: null,
+    searchQuery: '',
+    searchMatches: [],
+    searchIndex: -1,
+    searchActiveElement: null,
+    tableLayouts: initial.tableLayouts && typeof initial.tableLayouts === 'object' ? initial.tableLayouts : {},
+    tableLayoutsSaveTimer: null,
     lastSavedReadingProgress: '',
     pendingDocumentSwitch: null,
+    markdownFilesSignature: '',
     annotations: Array.isArray(initial.annotations) ? initial.annotations : [],
     pendingAnnotationSelection: null,
     readingHistoryApplying: false,
@@ -86,6 +106,7 @@
     themeSelect: document.getElementById('themeSelect'),
     editor: document.getElementById('markdownEditor'),
     preview: document.getElementById('preview'),
+    sourceAxis: document.getElementById('sourceAxis'),
     previewScroller: document.getElementById('previewScroller'),
     markdownFileList: document.getElementById('markdownFileList'),
     outlineSplitHandle: document.getElementById('outlineSplitHandle'),
@@ -102,6 +123,13 @@
     readingBack: document.getElementById('readingBack'),
     readingForward: document.getElementById('readingForward'),
     hovercard: document.getElementById('hovercard'),
+    searchBox: document.getElementById('searchBox'),
+    searchInput: document.getElementById('searchInput'),
+    searchCount: document.getElementById('searchCount'),
+    searchPrev: document.getElementById('searchPrev'),
+    searchNext: document.getElementById('searchNext'),
+    searchClose: document.getElementById('searchClose'),
+    fileContextMenu: document.getElementById('fileContextMenu'),
     selectionToolbar: document.getElementById('selectionToolbar'),
     highlightSelection: document.getElementById('highlightSelection'),
     bookmarkSelection: document.getElementById('bookmarkSelection'),
@@ -136,6 +164,8 @@
       markdownFilesLabel: 'Markdown files',
       outlineSplitLabel: 'Resize Markdown file list and outline',
       markdown: 'Markdown',
+      documents: 'Documents',
+      latex: 'LaTeX',
       preview: 'HTML Preview',
       language: 'Language',
       languageTitle: 'Choose UI language',
@@ -195,6 +225,23 @@
       venue: 'Venue: ',
       info: 'Info: ',
       openSource: 'Open source',
+      copyAbsolutePath: 'Copy absolute path',
+      copyRelativePath: 'Copy relative path',
+      pathCopied: 'Path copied',
+      pinnedSection: 'Pinned',
+      tableFilter: 'Filter column',
+      tableFilterSearch: 'Search values',
+      tableClearFilter: 'Clear filter',
+      tableEmptyValue: '(empty)',
+      tableMoreValues: '{count} more values hidden. Search to narrow.',
+      tableResize: 'Resize table',
+      search: 'Search',
+      searchPlaceholder: 'Search preview text',
+      searchNoMatches: 'No matches',
+      searchCount: '{current}/{total}',
+      searchPrevTitle: 'Previous match',
+      searchNextTitle: 'Next match',
+      closeSearchTitle: 'Close search',
       section: 'Section',
       highlight: 'Highlight',
       bookmark: 'Bookmark',
@@ -218,6 +265,20 @@
       railPreview: 'Position preview',
       railPreviewEmpty: 'No previewable content near this position.',
       marginNotesLabel: 'Margin notes',
+      sourceAxisLabel: 'Markdown source line map',
+      sourceLineRange: 'Markdown lines {lines}',
+      axisHeading: 'Heading',
+      axisParagraph: 'Paragraph',
+      axisFigure: 'Figure',
+      axisTable: 'Table',
+      axisDiagram: 'Diagram',
+      axisFormula: 'Formula',
+      axisCode: 'Code',
+      axisList: 'List',
+      axisQuote: 'Quote',
+      axisReference: 'Reference',
+      axisMetadata: 'Metadata',
+      axisBlock: 'Block',
       sectionLocation: 'Section: ',
       chapterNumber: 'Chapter: ',
       subsectionTitle: 'Title: ',
@@ -230,6 +291,8 @@
       markdownFilesLabel: 'Markdown 文件列表',
       outlineSplitLabel: '调整 Markdown 文件列表和目录高度',
       markdown: 'Markdown',
+      documents: '\u6587\u6863',
+      latex: 'LaTeX',
       preview: 'HTML 预览',
       language: '语言',
       languageTitle: '选择界面语言',
@@ -289,6 +352,23 @@
       venue: '会议/期刊：',
       info: '信息：',
       openSource: '打开来源',
+      copyAbsolutePath: '复制绝对路径',
+      copyRelativePath: '复制相对路径',
+      pathCopied: '路径已复制',
+      pinnedSection: '已置顶',
+      tableFilter: '筛选这一列',
+      tableFilterSearch: '搜索值',
+      tableClearFilter: '清除筛选',
+      tableEmptyValue: '（空）',
+      tableMoreValues: '还有 {count} 个值，可以搜索缩小范围。',
+      tableResize: '调整表格大小',
+      search: '搜索',
+      searchPlaceholder: '搜索预览内容',
+      searchNoMatches: '无匹配',
+      searchCount: '{current}/{total}',
+      searchPrevTitle: '上一个匹配',
+      searchNextTitle: '下一个匹配',
+      closeSearchTitle: '关闭搜索',
       section: '小节',
       highlight: '高亮',
       bookmark: '书签',
@@ -312,6 +392,20 @@
       railPreview: '位置预览',
       railPreviewEmpty: '这个位置附近没有可预览内容。',
       marginNotesLabel: '侧边批注',
+      sourceAxisLabel: 'Markdown 源文档行号映射',
+      sourceLineRange: 'Markdown 第 {lines} 行',
+      axisHeading: '标题',
+      axisParagraph: '段落',
+      axisFigure: '图',
+      axisTable: '表',
+      axisDiagram: '图表',
+      axisFormula: '公式',
+      axisCode: '代码',
+      axisList: '列表',
+      axisQuote: '引用',
+      axisReference: '文献',
+      axisMetadata: '元数据',
+      axisBlock: '内容块',
       sectionLocation: '所在章节：',
       chapterNumber: '章节号：',
       subsectionTitle: '小标题：',
@@ -353,6 +447,7 @@
       language: state.language,
       layout: state.layout,
       outlineFilesHeight: state.outlineFilesHeight,
+      expandedFolders: state.expandedFolders,
       readerFontSize: state.readerFontSize,
       sourceCollapsed: state.sourceCollapsed
     }));
@@ -405,14 +500,22 @@
     els.renderStats.textContent = state.blocks.length + ' ' + t('blocks');
   }
 
+  function documentSourceTitle() {
+    return state.documentKind === 'latex' ? t('latex') : t('markdown');
+  }
+
+  function updateDocumentKindLabels() {
+    setText(els.fileListTitle, t('documents'));
+    setText(els.sourceTitle, documentSourceTitle());
+  }
+
   function applyLanguage(language, options = {}) {
     state.language = validLanguage(language);
     document.documentElement.lang = state.language === 'zh-CN' ? 'zh-CN' : 'en';
     if (els.languageSelect) els.languageSelect.value = state.language;
 
     setText(els.outlineTitle, t('outline'));
-    setText(els.fileListTitle, t('markdownFiles'));
-    setText(els.sourceTitle, t('markdown'));
+    updateDocumentKindLabels();
     setText(els.previewTitle, t('preview'));
     setText(els.languageLabel, t('language'));
     setText(els.themeLabel, t('theme'));
@@ -446,6 +549,10 @@
     setTitle(els.noteSelection, t('noteSelection'));
     setTitle(els.confirmSelectionNote, t('confirmNote'));
     setTitle(els.cancelSelectionNote, t('cancelNote'));
+    if (els.searchInput) els.searchInput.placeholder = t('searchPlaceholder');
+    setTitle(els.searchPrev, t('searchPrevTitle'));
+    setTitle(els.searchNext, t('searchNextTitle'));
+    setTitle(els.searchClose, t('closeSearchTitle'));
 
     document.querySelector('[data-resize-handle="outline-source"]')?.setAttribute('aria-label', t('outlineResizeLabel'));
     document.querySelector('[data-resize-handle="source-preview"]')?.setAttribute('aria-label', t('previewResizeLabel'));
@@ -454,6 +561,7 @@
     els.previewToc.setAttribute('aria-label', t('previewTocLabel'));
     els.previewNotes.setAttribute('aria-label', t('previewNotesLabel'));
     els.noteMarginPanel.setAttribute('aria-label', t('marginNotesLabel'));
+    if (els.sourceAxis) els.sourceAxis.setAttribute('aria-label', t('sourceAxisLabel'));
     els.bookmarkRail.setAttribute('aria-label', t('bookmarkRail'));
     els.lightboxToolbar.setAttribute('aria-label', t('imageControls'));
 
@@ -469,6 +577,7 @@
     renderMarkdownFiles();
     if (state.blocks.length) state.sectionPreviews = collectSectionPreviews(state.blocks);
     renderOutlines();
+    scheduleSourceAxisRender();
     renderNotesPanel();
     scheduleNoteMarginRender();
     bindDiagramClicks();
@@ -516,6 +625,7 @@
     state.sourceCollapsed = !!collapsed;
     applySourceCollapsed();
     setLayout(state.layout.outline, state.layout.source);
+    scheduleSourceAxisRender();
   }
 
   function constrainLayout(nextOutline, nextSource) {
@@ -639,6 +749,7 @@
             // The VS Code webview may release the pointer before this handler runs.
           }
           persistWebviewState();
+          scheduleSourceAxisRender();
         };
 
         handle.addEventListener('pointermove', onPointerMove);
@@ -670,6 +781,16 @@
       .replace(/"/g, '&quot;');
   }
 
+  function hashString(value) {
+    let hash = 2166136261;
+    const text = String(value || '');
+    for (let i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+  }
+
   function stripMarkdown(value) {
     return String(value)
       .replace(/```[\s\S]*?```/g, ' ')
@@ -679,6 +800,23 @@
       .replace(/[*_#>]/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
+  }
+
+  function stripLatex(value) {
+    return String(value || '')
+      .replace(/%.*$/gm, ' ')
+      .replace(/\\begin\{[^}]+\}|\\end\{[^}]+\}/g, ' ')
+      .replace(/\\(?:label|ref|cite|bibliography|bibliographystyle)(?:\[[^\]]*\])?\{[^}]*\}/g, ' ')
+      .replace(/\\(?:textbf|textit|emph|title|author|date|caption|item)\*?(?:\[[^\]]*\])?\{([^{}]*)\}/g, '$1')
+      .replace(/\\(?:chapter|section|subsection|subsubsection|paragraph)\*?(?:\[[^\]]*\])?\{([^{}]*)\}/g, '$1')
+      .replace(/\\[A-Za-z@]+\*?(?:\[[^\]]*\])?/g, ' ')
+      .replace(/[{}$]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function blockPlainText(block) {
+    return block && block.documentKind === 'latex' ? stripLatex(block.raw) : stripMarkdown(block.raw);
   }
 
   function makeSlug(title, used) {
@@ -700,6 +838,12 @@
 
   function markdownForRender() {
     return String(state.markdown || '').replace(annotationBlockPattern, '').replace(/\s+$/g, '');
+  }
+
+  function sourceForRender() {
+    return state.documentKind === 'latex'
+      ? String(state.markdown || '').replace(/\s+$/g, '')
+      : markdownForRender();
   }
 
   function cleanReferencePart(value) {
@@ -799,6 +943,33 @@
     return refs;
   }
 
+  function collectLatexReferences(source) {
+    const refs = new Map();
+    const bibitemRe = /\\bibitem(?:\[[^\]]*\])?\{([^}]+)\}([\s\S]*?)(?=\\bibitem(?:\[[^\]]*\])?\{|\\end\{thebibliography\}|$)/g;
+    let match;
+    while ((match = bibitemRe.exec(source))) {
+      const key = match[1].trim();
+      if (!key) continue;
+      const raw = stripLatex(match[2]).replace(/\s+/g, ' ').trim();
+      const ref = {
+        label: key,
+        raw,
+        title: raw.slice(0, 160) || key,
+        authors: '',
+        venue: venueFromReferenceMeta(raw),
+        meta: raw,
+        url: ''
+      };
+      refs.set(key, ref);
+      refs.set(key.replace(/[^A-Za-z0-9_.:-]+/g, '-').toLowerCase(), ref);
+    }
+    return refs;
+  }
+
+  function collectDocumentReferences(source) {
+    return state.documentKind === 'latex' ? collectLatexReferences(source) : collectReferences(source);
+  }
+
   function classifyBlock(raw) {
     const trimmed = raw.trim();
     if (/^---\n[\s\S]*\n---$/.test(trimmed)) return 'frontmatter';
@@ -883,7 +1054,139 @@
       if (!lines[i + 1] || !lines[i + 1].trim()) flush(i);
     }
     flush(lines.length - 1);
-    return annotateBlocks(blocks);
+    return annotateBlocks(blocks, 'markdown');
+  }
+
+  function classifyLatexBlock(raw) {
+    const trimmed = raw.trim();
+    if (!trimmed) return 'paragraph';
+    if (/^\\documentclass\b|^\\usepackage\b|^\\(?:title|author|date)\b/m.test(trimmed)) return 'frontmatter';
+    if (/^\\(?:chapter|section|subsection|subsubsection|paragraph)\*?(?:\[[^\]]*\])?\{/.test(trimmed)) return 'heading';
+    if (/^\\begin\{(?:equation\*?|align\*?|gather\*?|multline\*?)\}/.test(trimmed) || /^\\\[/.test(trimmed) || /^\$\$/.test(trimmed)) return 'math';
+    if (/^\\begin\{figure\*?\}/.test(trimmed)) return 'figure';
+    if (/^\\begin\{(?:itemize|enumerate)\}/.test(trimmed)) return 'list';
+    if (/^\\begin\{(?:table\*?|tabular\*?)\}/.test(trimmed)) return 'table';
+    if (/^\\begin\{abstract\}/.test(trimmed)) return 'abstract';
+    if (/^\\begin\{thebibliography\}/.test(trimmed) || /^\\bibitem/.test(trimmed)) return 'reference';
+    if (/^\\begin\{[^}]+\}/.test(trimmed)) return 'latex-env';
+    return 'paragraph';
+  }
+
+  function splitLatexBlocks(source) {
+    const lines = String(source || '').replace(/\r\n/g, '\n').split('\n');
+    const blocks = [];
+    let start = null;
+    let buffer = [];
+    let env = '';
+    let mathFence = '';
+
+    const headingRe = /^\\(?:chapter|section|subsection|subsubsection|paragraph)\*?(?:\[[^\]]*\])?\{/;
+    const documentBoundaryRe = /^\\(?:begin|end)\{document\}\s*(?:%.*)?$/;
+
+    function flush(end) {
+      if (start === null || !buffer.join('\n').trim()) {
+        start = null;
+        buffer = [];
+        return;
+      }
+      const raw = buffer.join('\n');
+      blocks.push({
+        index: blocks.length,
+        start,
+        end,
+        raw,
+        type: classifyLatexBlock(raw)
+      });
+      start = null;
+      buffer = [];
+    }
+
+    function startSingleLineBlock(index, line) {
+      flush(index - 1);
+      start = index;
+      buffer = [line];
+      flush(index);
+    }
+
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      const trimmed = line.trim();
+
+      if (mathFence) {
+        buffer.push(line);
+        if ((mathFence === '$$' && /\$\$\s*$/.test(trimmed)) || (mathFence === '\\]' && /\\\]\s*$/.test(trimmed))) {
+          mathFence = '';
+          flush(i);
+        }
+        continue;
+      }
+
+      if (env) {
+        const endRe = new RegExp('^\\\\end\\{' + env.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\*?\\}');
+        buffer.push(line);
+        if (endRe.test(trimmed)) {
+          env = '';
+          flush(i);
+        }
+        continue;
+      }
+
+      if (!trimmed) {
+        flush(i - 1);
+        continue;
+      }
+
+      if (documentBoundaryRe.test(trimmed) || /^\\maketitle\b/.test(trimmed)) {
+        flush(i - 1);
+        continue;
+      }
+
+      if (headingRe.test(trimmed)) {
+        startSingleLineBlock(i, line);
+        continue;
+      }
+
+      if (/^\\\[/.test(trimmed) || /^\$\$/.test(trimmed)) {
+        flush(i - 1);
+        start = i;
+        buffer = [line];
+        if (/\\\]\s*$/.test(trimmed) || (trimmed.length > 2 && /\$\$\s*$/.test(trimmed))) {
+          flush(i);
+        } else {
+          mathFence = trimmed.startsWith('$$') ? '$$' : '\\]';
+        }
+        continue;
+      }
+
+      const beginMatch = /^\\begin\{([^}]+)\}/.exec(trimmed);
+      if (beginMatch) {
+        const baseEnv = beginMatch[1].replace(/\*$/, '');
+        if (baseEnv === 'document') {
+          flush(i - 1);
+          continue;
+        }
+        flush(i - 1);
+        start = i;
+        buffer = [line];
+        const endRe = new RegExp('\\\\end\\{' + baseEnv.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\*?\\}');
+        if (endRe.test(trimmed)) {
+          flush(i);
+        } else {
+          env = baseEnv;
+        }
+        continue;
+      }
+
+      if (start === null) start = i;
+      buffer.push(line);
+      if (!lines[i + 1] || !lines[i + 1].trim()) flush(i);
+    }
+    flush(lines.length - 1);
+    return annotateBlocks(blocks, 'latex');
+  }
+
+  function splitDocumentBlocks(source) {
+    return state.documentKind === 'latex' ? splitLatexBlocks(source) : splitMarkdownBlocks(source);
   }
 
   function headingInfo(raw, used) {
@@ -905,7 +1208,20 @@
     };
   }
 
-  function isEditablePreviewBlock(type, raw) {
+  function latexHeadingInfo(raw, used) {
+    const match = /\\(chapter|section|subsection|subsubsection|paragraph)\*?(?:\[[^\]]*\])?\{([^{}]+)\}/.exec(raw.trim());
+    if (!match) return null;
+    const levels = { chapter: 1, section: 2, subsection: 3, subsubsection: 4, paragraph: 5 };
+    const title = stripLatex(match[2]);
+    return {
+      level: levels[match[1]] || 2,
+      title,
+      id: makeSlug(title, used)
+    };
+  }
+
+  function isEditablePreviewBlock(type, raw, documentKind = 'markdown') {
+    if (documentKind !== 'markdown') return false;
     if (!['heading', 'paragraph', 'blockquote', 'list'].includes(type)) return false;
     if (raw.includes('$$') || raw.includes('```')) return false;
     if (/\$[^$\n]+\$/.test(raw)) return false;
@@ -913,12 +1229,19 @@
     return true;
   }
 
-  function annotateBlocks(blocks) {
+  function annotateBlocks(blocks, documentKind = 'markdown') {
     const used = new Map();
+    const occurrences = new Map();
     blocks.forEach(block => {
-      block.editable = isEditablePreviewBlock(block.type, block.raw);
+      block.documentKind = documentKind;
+      block.hash = hashString([documentKind, block.type, block.raw].join('\n'));
+      const occurrenceKey = block.type + ':' + block.hash;
+      const occurrence = (occurrences.get(occurrenceKey) || 0) + 1;
+      occurrences.set(occurrenceKey, occurrence);
+      block.key = occurrenceKey + ':' + occurrence;
+      block.editable = isEditablePreviewBlock(block.type, block.raw, documentKind);
       if (block.type !== 'heading') return;
-      const info = headingInfo(block.raw, used);
+      const info = documentKind === 'latex' ? latexHeadingInfo(block.raw, used) : headingInfo(block.raw, used);
       if (!info) return;
       block.headingId = info.id;
       block.headingTitle = info.title;
@@ -936,7 +1259,7 @@
       for (let j = i + 1; j < blocks.length; j += 1) {
         const next = blocks[j];
         if (next.type === 'heading' && (next.headingLevel || 7) <= (block.headingLevel || 7)) break;
-        const text = stripMarkdown(next.raw);
+        const text = blockPlainText(next);
         if (text) parts.push(text);
         if (parts.join(' ').length > 720) break;
       }
@@ -1037,18 +1360,156 @@
     return simpleMarkdownFragment(raw, type);
   }
 
+  function latexCommandValue(raw, command) {
+    const pattern = new RegExp('\\\\' + command + '\\*?(?:\\[[^\\]]*\\])?\\{([^{}]*)\\}');
+    const match = pattern.exec(raw);
+    return match ? match[1].trim() : '';
+  }
+
+  function renderInlineLatex(value) {
+    let text = escapeHtml(String(value || '').replace(/%.*$/gm, ''));
+    text = text.replace(/\\cite(?:[tp])?\*?(?:\[[^\]]*\])?\{([^}]+)\}/g, function (_, keys) {
+      return String(keys).split(',').map(key => {
+        const clean = key.trim();
+        const id = 'ref-' + clean.replace(/[^A-Za-z0-9_.:-]+/g, '-').toLowerCase();
+        return '<a class="cite-ref" href="#' + escapeHtml(id) + '" data-preview-id="' + escapeHtml(id) + '">[' + escapeHtml(clean) + ']</a>';
+      }).join(', ');
+    });
+    text = text.replace(/\\(?:ref|eqref|autoref)\{([^}]+)\}/g, function (_, label) {
+      const clean = label.trim();
+      return '<a class="section-ref" href="#' + escapeHtml(clean) + '" data-preview-id="' + escapeHtml(clean) + '">' + escapeHtml(clean) + '</a>';
+    });
+    text = text.replace(/\\(?:textbf|textit|emph)\{([^{}]*)\}/g, function (match, body) {
+      const tag = match.startsWith('\\textbf') ? 'strong' : 'em';
+      return '<' + tag + '>' + escapeHtml(body) + '</' + tag + '>';
+    });
+    text = text.replace(/\\url\{([^{}]*)\}/g, '<a href="$1">$1</a>');
+    text = text.replace(/\\label\{([^}]+)\}/g, '');
+    text = text.replace(/\\[A-Za-z@]+\*?(?:\[[^\]]*\])?\{([^{}]*)\}/g, '$1');
+    text = text.replace(/\\\\/g, '<br>');
+    return text.trim();
+  }
+
+  function latexMathContent(raw) {
+    return String(raw || '')
+      .replace(/^\\begin\{[^}]+\}/, '')
+      .replace(/\\end\{[^}]+\}$/, '')
+      .replace(/^\\\[/, '')
+      .replace(/\\\]$/, '')
+      .replace(/^\$\$/, '')
+      .replace(/\$\$$/, '')
+      .trim();
+  }
+
+  function renderLatexFrontMatter(raw) {
+    const title = latexCommandValue(raw, 'title');
+    const author = latexCommandValue(raw, 'author');
+    const date = latexCommandValue(raw, 'date');
+    if (!title && !author && !date) {
+      return '<div class="frontmatter-card latex-frontmatter"><div class="frontmatter-kicker">LaTeX</div><pre>' + escapeHtml(raw) + '</pre></div>';
+    }
+    const rows = [
+      title ? ['Title', title] : null,
+      author ? ['Author', author] : null,
+      date ? ['Date', date] : null
+    ].filter(Boolean);
+    return '<div class="frontmatter-card latex-frontmatter"><div class="frontmatter-kicker">LaTeX</div><dl>' +
+      rows.map(row => '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + renderInlineLatex(row[1]) + '</dd></div>').join('') +
+      '</dl></div>';
+  }
+
+  function renderLatexFigure(raw) {
+    const imageMatch = /\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}/.exec(raw);
+    const caption = latexCommandValue(raw, 'caption');
+    const label = latexCommandValue(raw, 'label');
+    if (!imageMatch) return '<pre class="latex-fallback">' + escapeHtml(raw) + '</pre>';
+    const src = imageMatch[1].trim();
+    return '<figure class="latex-figure"' + (label ? ' id="' + escapeHtml(label) + '"' : '') + '>' +
+      '<img src="' + escapeHtml(src) + '" alt="' + escapeHtml(stripLatex(caption || src)) + '">' +
+      (caption ? '<figcaption>' + renderInlineLatex(caption) + '</figcaption>' : '') +
+      '</figure>';
+  }
+
+  function renderLatexList(raw, ordered) {
+    const tag = ordered ? 'ol' : 'ul';
+    const body = raw
+      .replace(/^\\begin\{[^}]+\}/, '')
+      .replace(/\\end\{[^}]+\}$/, '');
+    const items = body.split(/\\item\b/).map(item => item.trim()).filter(Boolean);
+    return '<' + tag + '>' + items.map(item => '<li>' + renderInlineLatex(item.replace(/\n+/g, ' ')) + '</li>').join('') + '</' + tag + '>';
+  }
+
+  function renderLatexReference(raw) {
+    const items = Array.from(raw.matchAll(/\\bibitem(?:\[[^\]]*\])?\{([^}]+)\}([\s\S]*?)(?=\\bibitem(?:\[[^\]]*\])?\{|\\end\{thebibliography\}|$)/g));
+    if (items.length > 1 || /\\begin\{thebibliography\}/.test(raw)) {
+      return '<div class="latex-bibliography">' + items.map(item => {
+        const key = item[1].trim();
+        const id = 'ref-' + key.replace(/[^A-Za-z0-9_.:-]+/g, '-').toLowerCase();
+        const body = stripLatex(item[2]).replace(/\s+/g, ' ').trim();
+        return '<p id="' + escapeHtml(id) + '"><strong>[' + escapeHtml(key) + ']</strong> ' + escapeHtml(body) + '</p>';
+      }).join('') + '</div>';
+    }
+    const itemMatch = /\\bibitem(?:\[[^\]]*\])?\{([^}]+)\}([\s\S]*)/.exec(raw.trim());
+    if (!itemMatch) return '<pre class="latex-fallback">' + escapeHtml(raw) + '</pre>';
+    const key = itemMatch[1].trim();
+    const body = stripLatex(itemMatch[2]).replace(/\s+/g, ' ').trim();
+    return '<p><strong>[' + escapeHtml(key) + ']</strong> ' + escapeHtml(body) + '</p>';
+  }
+
+  function renderLatexFragment(raw, type) {
+    if (type === 'frontmatter') return renderLatexFrontMatter(raw);
+    if (type === 'heading') {
+      const info = latexHeadingInfo(raw, new Map());
+      const level = info ? Math.min(6, Math.max(1, info.level)) : 2;
+      return '<h' + level + '>' + renderInlineLatex(info ? info.title : stripLatex(raw)) + '</h' + level + '>';
+    }
+    if (type === 'math') return '<div class="math-block">\\[' + escapeHtml(latexMathContent(raw)) + '\\]</div>';
+    if (type === 'figure') return renderLatexFigure(raw);
+    if (type === 'list') return renderLatexList(raw, /^\\begin\{enumerate\}/.test(raw.trim()));
+    if (type === 'abstract') {
+      const body = raw.replace(/^\\begin\{abstract\}/, '').replace(/\\end\{abstract\}$/, '').trim();
+      return '<section class="latex-abstract"><h2>Abstract</h2><p>' + renderInlineLatex(body.replace(/\n+/g, ' ')) + '</p></section>';
+    }
+    if (type === 'reference') return renderLatexReference(raw);
+    if (type === 'table' || type === 'latex-env') return '<pre class="latex-fallback">' + escapeHtml(raw) + '</pre>';
+    return '<p>' + renderInlineLatex(raw.replace(/\n+/g, ' ')) + '</p>';
+  }
+
+  function renderDocumentFragment(raw, type, documentKind) {
+    return documentKind === 'latex' ? renderLatexFragment(raw, type) : renderMarkdownFragment(raw, type);
+  }
+
+  function blockRenderMode(block) {
+    return [
+      block.documentKind || 'markdown',
+      block.type,
+      block.editable && state.previewEditEnabled ? 'edit' : 'read'
+    ].join(':');
+  }
+
   function renderBlock(block) {
-    const refMatch = /^\[R(\d+)\]\s+/.exec(block.raw.trim());
-    const blockId = refMatch ? 'ref-r' + refMatch[1].toLowerCase() : (block.headingId || '');
+    const refMatch = block.documentKind === 'latex'
+      ? /\\bibitem(?:\[[^\]]*\])?\{([^}]+)\}/.exec(block.raw.trim())
+      : /^\[R(\d+)\]\s+/.exec(block.raw.trim());
+    const refId = refMatch
+      ? (block.documentKind === 'latex'
+        ? 'ref-' + refMatch[1].replace(/[^A-Za-z0-9_.:-]+/g, '-').toLowerCase()
+        : 'ref-r' + refMatch[1].toLowerCase())
+      : '';
+    const blockId = refId || (block.headingId || '');
     const idAttr = blockId ? ' id="' + escapeHtml(blockId) + '"' : '';
     const classes = [
       'md-block',
+      block.documentKind === 'latex' ? 'latex-block' : 'markdown-block',
       block.editable && state.previewEditEnabled ? 'preview-editable' : 'preview-readonly',
       block.type === 'reference' ? 'reference-block' : '',
       block.type === 'frontmatter' ? 'frontmatter-block' : ''
     ].filter(Boolean).join(' ');
     const attrs = [
       ' data-block-index="' + block.index + '"',
+      ' data-block-key="' + escapeHtml(block.key || '') + '"',
+      ' data-block-hash="' + escapeHtml(block.hash || '') + '"',
+      ' data-render-mode="' + escapeHtml(blockRenderMode(block)) + '"',
       ' data-block-type="' + block.type + '"',
       ' data-source-start="' + block.start + '"',
       ' data-source-end="' + block.end + '"',
@@ -1057,19 +1518,97 @@
     const renderRaw = block.type === 'heading'
       ? block.raw.replace(/\s*\{#[A-Za-z0-9_.:-]+\}\s*$/, '')
       : block.raw;
-    return '<section' + idAttr + ' class="' + classes + '"' + attrs + '>' + renderMarkdownFragment(renderRaw, block.type) + '</section>';
+    return '<section' + idAttr + ' class="' + classes + '"' + attrs + '>' + renderDocumentFragment(renderRaw, block.type, block.documentKind) + '</section>';
   }
 
   function refreshPreviewBlockCache() {
     state.blockElements = Array.from(els.preview.querySelectorAll('.md-block[data-block-index]'));
     state.blockElementByIndex = new Map();
     state.blockElementBySourceStart = new Map();
+    state.blockTops = [];
+    state.blockHeights = [];
+    state.blockTopByIndex = new Map();
     for (const element of state.blockElements) {
       const index = Number(element.dataset.blockIndex);
       const sourceStart = Number(element.dataset.sourceStart);
       if (Number.isFinite(index)) state.blockElementByIndex.set(index, element);
       if (Number.isFinite(sourceStart)) state.blockElementBySourceStart.set(sourceStart, element);
+      const top = Math.round(element.offsetTop || 0);
+      state.blockTops.push(top);
+      state.blockHeights.push(Math.round(element.offsetHeight || 0));
+      if (Number.isFinite(index)) state.blockTopByIndex.set(index, top);
     }
+  }
+
+  function refreshPreviewBlockMetrics() {
+    state.blockTops = [];
+    state.blockHeights = [];
+    state.blockTopByIndex = new Map();
+    for (const element of state.blockElements) {
+      const index = Number(element.dataset.blockIndex);
+      const top = Math.round(element.offsetTop || 0);
+      state.blockTops.push(top);
+      state.blockHeights.push(Math.round(element.offsetHeight || 0));
+      if (Number.isFinite(index)) state.blockTopByIndex.set(index, top);
+    }
+  }
+
+  function createBlockElement(block) {
+    const template = document.createElement('template');
+    template.innerHTML = renderBlock(block).trim();
+    return template.content.firstElementChild;
+  }
+
+  function updateBlockElementMetadata(element, block) {
+    element.dataset.blockIndex = String(block.index);
+    element.dataset.blockKey = block.key || '';
+    element.dataset.blockHash = block.hash || '';
+    element.dataset.renderMode = blockRenderMode(block);
+    element.dataset.blockType = block.type;
+    element.dataset.sourceStart = String(block.start);
+    element.dataset.sourceEnd = String(block.end);
+  }
+
+  function patchPreviewBlocks(blocks, options = {}) {
+    if (!blocks.length) {
+      els.preview.classList.add('empty');
+      els.preview.replaceChildren();
+      const empty = document.createElement('div');
+      empty.className = 'empty-state';
+      empty.innerHTML = '<h1>' + escapeHtml(t('emptyDocument')) + '</h1>';
+      els.preview.appendChild(empty);
+      return [empty];
+    }
+
+    els.preview.classList.remove('empty');
+    const oldByKey = new Map();
+    if (!options.force) {
+      els.preview.querySelectorAll('.md-block[data-block-key]').forEach(element => {
+        const key = element.dataset.blockKey || '';
+        if (key && !oldByKey.has(key)) oldByKey.set(key, element);
+      });
+    }
+
+    const fragment = document.createDocumentFragment();
+    const changed = [];
+    for (const block of blocks) {
+      const oldElement = oldByKey.get(block.key || '');
+      const canReuse = oldElement &&
+        oldElement.dataset.blockHash === block.hash &&
+        oldElement.dataset.renderMode === blockRenderMode(block);
+      if (canReuse) {
+        updateBlockElementMetadata(oldElement, block);
+        fragment.appendChild(oldElement);
+        continue;
+      }
+      const nextElement = createBlockElement(block);
+      if (nextElement) {
+        changed.push(nextElement);
+        fragment.appendChild(nextElement);
+      }
+    }
+    els.preview.replaceChildren(fragment);
+    return changed;
   }
 
   function previewBlockElementByIndex(index) {
@@ -1080,10 +1619,35 @@
     return state.blockElementBySourceStart.get(Number(sourceStart)) || null;
   }
 
+  function previewBlockTop(element) {
+    if (!element) return 0;
+    const index = Number(element.dataset.blockIndex);
+    if (Number.isFinite(index) && state.blockTopByIndex.has(index)) {
+      return state.blockTopByIndex.get(index);
+    }
+    return Math.round(element.offsetTop || 0);
+  }
+
   function blockElementAtScrollTop(top, offset = 24) {
     const blocks = state.blockElements;
     if (!blocks.length) return null;
     const targetTop = normalizedPreviewScrollTop(top) + offset;
+    const blockTops = state.blockTops;
+    if (blockTops && blockTops.length === blocks.length) {
+      let low = 0;
+      let high = blockTops.length - 1;
+      let bestIndex = 0;
+      while (low <= high) {
+        const mid = (low + high) >> 1;
+        if (blockTops[mid] <= targetTop) {
+          bestIndex = mid;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+      return blocks[bestIndex] || blocks[0];
+    }
     let low = 0;
     let high = blocks.length - 1;
     let best = blocks[0];
@@ -1103,27 +1667,28 @@
   async function renderPreview(options = {}) {
     const renderVersion = ++state.renderVersion;
     initLibraries();
-    const sourceMarkdown = markdownForRender();
-    state.refs = collectReferences(sourceMarkdown);
-    state.blocks = splitMarkdownBlocks(sourceMarkdown);
+    const sourceMarkdown = sourceForRender();
+    state.refs = collectDocumentReferences(sourceMarkdown);
+    state.blocks = splitDocumentBlocks(sourceMarkdown);
     state.sectionPreviews = collectSectionPreviews(state.blocks);
-    els.preview.classList.remove('empty');
-    els.preview.innerHTML = state.blocks.map(block => renderBlock(block)).join('\n') || '<div class="empty-state"><h1>' + escapeHtml(t('emptyDocument')) + '</h1></div>';
+    const changedBlocks = patchPreviewBlocks(state.blocks, { force: !!options.forceFull });
     refreshPreviewBlockCache();
     if (options.initialProgress) {
       els.previewScroller.scrollTop = topForReadingProgress(options.initialProgress);
     }
     updateRenderStats();
-    renderMarkdownFiles();
     renderOutlines();
-    postProcessPreview();
-    await runRenderers();
+    const renderRoots = changedBlocks.length ? changedBlocks : [];
+    postProcessPreview(renderRoots);
+    await runRenderers(renderRoots);
     if (renderVersion !== state.renderVersion) return false;
     refreshPreviewBlockCache();
     if (options.initialProgress) {
       els.previewScroller.scrollTop = topForReadingProgress(options.initialProgress);
     }
     applyAnnotations();
+    if (state.searchQuery) refreshSearch({ preserveIndex: true, skipScroll: true });
+    scheduleSourceAxisRender(180);
     scheduleBookmarkMarkersUpdate();
     renderNotesPanel();
     scheduleNoteMarginRender();
@@ -1141,28 +1706,590 @@
     }
   }
 
-  function postProcessPreview() {
-    wrapTables();
-    markImages();
-    linkCitations();
-    bindImageClicks();
-    resolvePreviewImages();
+  function postProcessPreview(roots = [els.preview]) {
+    wrapTables(roots);
+    markImages(roots);
+    linkCitations(roots);
+    bindImageClicks(roots);
+    resolvePreviewImages(roots);
   }
 
-  function wrapTables() {
-    els.preview.querySelectorAll('table').forEach(table => {
-      if (table.parentElement && table.parentElement.classList.contains('table-wrap')) return;
-      const wrap = document.createElement('div');
-      wrap.className = 'table-wrap';
-      table.parentNode.insertBefore(wrap, table);
-      wrap.appendChild(table);
+  function nodesInRoots(roots, selector) {
+    const nodes = [];
+    const list = Array.isArray(roots) ? roots : [roots];
+    for (const root of list) {
+      if (!root || root.nodeType !== 1) continue;
+      if (root.matches && root.matches(selector)) nodes.push(root);
+      root.querySelectorAll(selector).forEach(node => nodes.push(node));
+    }
+    return nodes;
+  }
+
+  function wrapTables(roots = [els.preview]) {
+    nodesInRoots(roots, 'table').forEach(table => {
+      if (table.closest('.table-shell')) {
+        enhanceReadingTable(table);
+        return;
+      }
+
+      const existingWrap = table.parentElement && table.parentElement.classList.contains('table-wrap')
+        ? table.parentElement
+        : null;
+      const shell = document.createElement('div');
+      shell.className = 'table-shell';
+
+      if (existingWrap) {
+        existingWrap.parentNode.insertBefore(shell, existingWrap);
+        shell.appendChild(existingWrap);
+      } else {
+        const wrap = document.createElement('div');
+        wrap.className = 'table-wrap';
+        table.parentNode.insertBefore(shell, table);
+        shell.appendChild(wrap);
+        wrap.appendChild(table);
+      }
+      enhanceReadingTable(table);
     });
   }
 
-  function markImages() {
-    els.preview.querySelectorAll('img').forEach(img => {
+  function tableBodyRows(table) {
+    const bodies = Array.from(table.tBodies || []);
+    const rows = bodies.flatMap(body => Array.from(body.rows || []));
+    return rows.length ? rows : Array.from(table.rows || []).slice(1);
+  }
+
+  function tableColumnCount(table) {
+    return Array.from(table.rows || []).reduce((max, row) => Math.max(max, row.cells.length), 0);
+  }
+
+  function tableHeaderCells(table) {
+    const headerRow = table.tHead && table.tHead.rows.length ? table.tHead.rows[0] : table.rows[0];
+    return headerRow ? Array.from(headerRow.cells || []) : [];
+  }
+
+  function tableCellText(cell) {
+    if (!cell) return '';
+    return (cell.innerText || cell.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function tableHeaderText(cell) {
+    const label = cell ? cell.querySelector('.table-header-label') : null;
+    return tableCellText(label || cell);
+  }
+
+  function ensureTableColgroup(table, colCount) {
+    let colgroup = Array.from(table.children).find(child => child.tagName === 'COLGROUP');
+    if (!colgroup) {
+      colgroup = document.createElement('colgroup');
+      table.insertBefore(colgroup, table.firstChild);
+    }
+    while (colgroup.children.length < colCount) {
+      colgroup.appendChild(document.createElement('col'));
+    }
+    while (colgroup.children.length > colCount) {
+      colgroup.removeChild(colgroup.lastElementChild);
+    }
+    return Array.from(colgroup.children);
+  }
+
+  function naturalTableColumnWidths(table, colCount) {
+    const rows = Array.from(table.rows || []).slice(0, 80);
+    const widths = [];
+    for (let index = 0; index < colCount; index += 1) {
+      let width = index === 0 ? 150 : 128;
+      for (const row of rows) {
+        const cell = row.cells[index];
+        if (!cell) continue;
+        const textWidth = Math.min(560, Math.max(0, tableCellText(cell).length * 7.2 + 48));
+        const measuredWidth = Math.min(560, Math.max(cell.scrollWidth || 0, cell.offsetWidth || 0) + 24);
+        width = Math.max(width, textWidth, measuredWidth);
+      }
+      widths.push(Math.round(Math.min(index === 0 ? 420 : 620, Math.max(96, width))));
+    }
+    return widths;
+  }
+
+  function applyTableColumnWidths(table) {
+    const widths = table.__columnWidths || [];
+    if (!widths.length) return;
+    const cols = ensureTableColgroup(table, widths.length);
+    let total = 0;
+    widths.forEach((width, index) => {
+      const safeWidth = Math.max(72, Math.round(width));
+      total += safeWidth;
+      cols[index].style.width = safeWidth + 'px';
+    });
+    const wrap = table.closest('.table-wrap');
+    const minWidth = Math.max(640, total, wrap ? wrap.clientWidth : 0);
+    table.style.width = minWidth + 'px';
+    table.style.minWidth = minWidth + 'px';
+  }
+
+  function initializeTableColumnWidths(table) {
+    const colCount = tableColumnCount(table);
+    if (!colCount) return;
+    if (!Array.isArray(table.__columnWidths) || table.__columnWidths.length !== colCount) {
+      table.__columnWidths = naturalTableColumnWidths(table, colCount);
+    }
+    applyTableColumnWidths(table);
+  }
+
+  function tableLayoutKey(table) {
+    const block = table.closest('.md-block[data-block-key], .md-block[data-source-start]');
+    const blockKey = block
+      ? (block.dataset.blockKey || ('source-' + (block.dataset.sourceStart || '0')))
+      : 'document';
+    const root = block || els.preview;
+    const tables = Array.from(root.querySelectorAll('table'));
+    const tableIndex = Math.max(0, tables.indexOf(table));
+    return blockKey + ':table:' + tableIndex;
+  }
+
+  function sanitizeClientTableLayout(layout) {
+    if (!layout || typeof layout !== 'object') return null;
+    const clean = {};
+    const width = Number(layout.width);
+    const height = Number(layout.height);
+    if (Number.isFinite(width)) clean.width = Math.min(4000, Math.max(160, Math.round(width)));
+    if (Number.isFinite(height)) clean.height = Math.min(3000, Math.max(100, Math.round(height)));
+    if (Array.isArray(layout.columnWidths)) {
+      clean.columnWidths = layout.columnWidths
+        .slice(0, 80)
+        .map(value => Math.min(2000, Math.max(48, Math.round(Number(value) || 0))))
+        .filter(value => Number.isFinite(value));
+    }
+    clean.updatedAt = Math.max(0, Math.round(Number(layout.updatedAt) || Date.now()));
+    return clean.width || clean.height || (clean.columnWidths && clean.columnWidths.length) ? clean : null;
+  }
+
+  function sanitizeClientTableLayouts(layouts) {
+    if (!layouts || typeof layouts !== 'object' || Array.isArray(layouts)) return {};
+    const clean = {};
+    Object.entries(layouts).slice(0, 500).forEach(([key, layout]) => {
+      const safeKey = String(key || '').slice(0, 220);
+      const safeLayout = sanitizeClientTableLayout(layout);
+      if (safeKey && safeLayout) clean[safeKey] = safeLayout;
+    });
+    return clean;
+  }
+
+  function tableLayoutFor(table) {
+    const key = table.dataset.tableLayoutKey || tableLayoutKey(table);
+    table.dataset.tableLayoutKey = key;
+    return sanitizeClientTableLayout(state.tableLayouts[key]) || {};
+  }
+
+  function scheduleTableLayoutsSave(delay = 300) {
+    clearTimeout(state.tableLayoutsSaveTimer);
+    state.tableLayoutsSaveTimer = setTimeout(saveTableLayoutsNow, delay);
+  }
+
+  function saveTableLayoutsNow() {
+    clearTimeout(state.tableLayoutsSaveTimer);
+    state.tableLayouts = sanitizeClientTableLayouts(state.tableLayouts);
+    post({
+      type: 'updateTableLayouts',
+      uri: state.uri,
+      tableLayouts: state.tableLayouts
+    });
+  }
+
+  function updateTableLayout(table, partial) {
+    if (!table) return;
+    const key = table.dataset.tableLayoutKey || tableLayoutKey(table);
+    table.dataset.tableLayoutKey = key;
+    const previous = sanitizeClientTableLayout(state.tableLayouts[key]) || {};
+    const next = sanitizeClientTableLayout(Object.assign({}, previous, partial, { updatedAt: Date.now() }));
+    if (!next) return;
+    state.tableLayouts[key] = next;
+    scheduleTableLayoutsSave();
+  }
+
+  function applyTableBoxLayout(table) {
+    const wrap = table.closest('.table-wrap');
+    if (!wrap) return;
+    const layout = tableLayoutFor(table);
+    if (layout.width) wrap.style.width = layout.width + 'px';
+    if (layout.height) {
+      wrap.style.height = layout.height + 'px';
+      wrap.style.maxHeight = 'none';
+    }
+  }
+
+  function ensureTableShellResizer(table) {
+    const wrap = table.closest('.table-wrap');
+    if (!wrap || wrap.querySelector('.table-shell-resizer')) return;
+    const resizer = document.createElement('span');
+    resizer.className = 'table-shell-resizer';
+    resizer.setAttribute('role', 'separator');
+    resizer.setAttribute('aria-orientation', 'both');
+    resizer.title = t('tableResize');
+    resizer.addEventListener('pointerdown', event => beginTableBoxResize(event, table));
+    wrap.appendChild(resizer);
+  }
+
+  function beginTableBoxResize(event, table) {
+    const wrap = table.closest('.table-wrap');
+    const shell = table.closest('.table-shell');
+    if (!wrap || !shell) return;
+    event.preventDefault();
+    event.stopPropagation();
+    hideTableFilterMenus();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startWidth = wrap.offsetWidth;
+    const startHeight = wrap.offsetHeight;
+    const parent = shell.parentElement || els.preview;
+    const maxWidth = Math.max(220, (parent ? parent.clientWidth : els.preview.clientWidth) - 2);
+    const maxHeight = 3000;
+    document.body.classList.add('table-box-resizing');
+
+    function move(pointerEvent) {
+      pointerEvent.preventDefault();
+      const nextWidth = Math.min(maxWidth, Math.max(180, startWidth + pointerEvent.clientX - startX));
+      const nextHeight = Math.min(maxHeight, Math.max(100, startHeight + pointerEvent.clientY - startY));
+      wrap.style.width = Math.round(nextWidth) + 'px';
+      wrap.style.height = Math.round(nextHeight) + 'px';
+      wrap.style.maxHeight = 'none';
+    }
+
+    function finish() {
+      document.body.classList.remove('table-box-resizing');
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', finish);
+      document.removeEventListener('pointercancel', finish);
+      updateTableLayout(table, {
+        width: wrap.offsetWidth,
+        height: wrap.offsetHeight,
+        columnWidths: table.__columnWidths || []
+      });
+      scheduleSourceAxisRender();
+      scheduleBookmarkMarkersUpdate();
+      scheduleNoteMarginRender();
+    }
+
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', finish);
+    document.addEventListener('pointercancel', finish);
+  }
+
+  function beginTableColumnResize(event, table, columnIndex) {
+    event.preventDefault();
+    event.stopPropagation();
+    initializeTableColumnWidths(table);
+    const widths = table.__columnWidths || [];
+    const startX = event.clientX;
+    const startWidth = widths[columnIndex] || 128;
+    document.body.classList.add('table-resizing');
+
+    function move(pointerEvent) {
+      pointerEvent.preventDefault();
+      widths[columnIndex] = Math.max(72, startWidth + pointerEvent.clientX - startX);
+      applyTableColumnWidths(table);
+    }
+
+    function finish() {
+      document.body.classList.remove('table-resizing');
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', finish);
+      document.removeEventListener('pointercancel', finish);
+      updateTableLayout(table, { columnWidths: widths });
+      scheduleSourceAxisRender();
+      scheduleBookmarkMarkersUpdate();
+      scheduleNoteMarginRender();
+    }
+
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', finish);
+    document.addEventListener('pointercancel', finish);
+  }
+
+  function prepareTableHeaderCell(table, cell, columnIndex) {
+    if (!cell || cell.classList.contains('table-enhanced-header')) return;
+    const content = document.createElement('div');
+    content.className = 'table-header-content';
+    const label = document.createElement('span');
+    label.className = 'table-header-label';
+    while (cell.firstChild) label.appendChild(cell.firstChild);
+
+    const filterButton = document.createElement('button');
+    filterButton.type = 'button';
+    filterButton.className = 'table-filter-button';
+    filterButton.title = t('tableFilter');
+    filterButton.setAttribute('aria-label', t('tableFilter'));
+    filterButton.textContent = '▾';
+    filterButton.addEventListener('pointerdown', event => event.stopPropagation());
+    filterButton.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      showTableFilterMenu(table, columnIndex, filterButton);
+    });
+
+    const resizer = document.createElement('span');
+    resizer.className = 'table-col-resizer';
+    resizer.setAttribute('role', 'separator');
+    resizer.setAttribute('aria-orientation', 'vertical');
+    resizer.addEventListener('pointerdown', event => beginTableColumnResize(event, table, columnIndex));
+
+    content.appendChild(label);
+    content.appendChild(filterButton);
+    content.appendChild(resizer);
+    cell.classList.add('table-enhanced-header');
+    cell.dataset.columnIndex = String(columnIndex);
+    cell.appendChild(content);
+  }
+
+  function tableColumnValues(table, columnIndex) {
+    const values = new Map();
+    tableBodyRows(table).forEach(row => {
+      const text = tableCellText(row.cells[columnIndex]);
+      values.set(text, (values.get(text) || 0) + 1);
+    });
+    return Array.from(values.entries()).map(([value, count]) => ({
+      value,
+      label: value || t('tableEmptyValue'),
+      count
+    })).sort((a, b) => a.label.localeCompare(b.label, state.language === 'zh-CN' ? 'zh-CN' : 'en', { numeric: true }));
+  }
+
+  function updateTableFilterButtons(table) {
+    const filters = table.__tableFilters instanceof Map ? table.__tableFilters : new Map();
+    tableHeaderCells(table).forEach((cell, index) => {
+      const button = cell.querySelector('.table-filter-button');
+      if (!button) return;
+      const active = filters.has(index);
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  }
+
+  function applyTableFilters(table) {
+    const filters = table.__tableFilters instanceof Map ? table.__tableFilters : new Map();
+    const active = Array.from(filters.entries()).filter(([, filter]) => filter && filter.selected instanceof Set);
+    tableBodyRows(table).forEach(row => {
+      const visible = active.every(([columnIndex, filter]) => {
+        const text = tableCellText(row.cells[columnIndex]);
+        return filter.selected.has(text);
+      });
+      row.hidden = !visible;
+      row.classList.toggle('table-row-hidden', !visible);
+    });
+    updateTableFilterButtons(table);
+    scheduleSourceAxisRender();
+    scheduleBookmarkMarkersUpdate();
+    scheduleNoteMarginRender();
+  }
+
+  function setTableColumnFilter(table, columnIndex, selected, valueCount) {
+    if (!(table.__tableFilters instanceof Map)) table.__tableFilters = new Map();
+    if (!selected || selected.size === valueCount) {
+      table.__tableFilters.delete(columnIndex);
+    } else {
+      table.__tableFilters.set(columnIndex, { selected: new Set(selected) });
+    }
+    applyTableFilters(table);
+  }
+
+  function hideTableFilterMenus() {
+    document.querySelectorAll('.table-filter-menu').forEach(menu => menu.remove());
+  }
+
+  function positionTableFilterMenu(menu, button) {
+    const shell = menu.closest('.table-shell');
+    if (!shell) return;
+    const shellRect = shell.getBoundingClientRect();
+    const buttonRect = button.getBoundingClientRect();
+    const width = Math.min(280, Math.max(220, shell.clientWidth - 16));
+    menu.style.width = width + 'px';
+    menu.style.left = Math.max(8, Math.min(buttonRect.right - shellRect.left - width, shell.clientWidth - width - 8)) + 'px';
+    menu.style.top = (buttonRect.bottom - shellRect.top + 8) + 'px';
+  }
+
+  function showTableFilterMenu(table, columnIndex, button) {
+    const shell = table.closest('.table-shell');
+    if (!shell) return;
+    const existing = shell.querySelector('.table-filter-menu[data-column-index="' + columnIndex + '"]');
+    if (existing) {
+      existing.remove();
+      return;
+    }
+    hideTableFilterMenus();
+
+    const values = tableColumnValues(table, columnIndex);
+    const activeFilter = table.__tableFilters instanceof Map ? table.__tableFilters.get(columnIndex) : null;
+    let selected = activeFilter && activeFilter.selected instanceof Set ? new Set(activeFilter.selected) : null;
+
+    const menu = document.createElement('div');
+    menu.className = 'table-filter-menu';
+    menu.dataset.columnIndex = String(columnIndex);
+    menu.setAttribute('role', 'menu');
+    menu.addEventListener('pointerdown', event => event.stopPropagation());
+    menu.addEventListener('click', event => event.stopPropagation());
+
+    const title = document.createElement('div');
+    title.className = 'table-filter-title';
+    title.textContent = tableHeaderText(tableHeaderCells(table)[columnIndex]) || t('tableFilter');
+
+    const search = document.createElement('input');
+    search.className = 'table-filter-search';
+    search.type = 'search';
+    search.placeholder = t('tableFilterSearch');
+
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.className = 'table-filter-clear';
+    clear.textContent = t('tableClearFilter');
+    clear.addEventListener('click', () => {
+      selected = null;
+      setTableColumnFilter(table, columnIndex, null, values.length);
+      hideTableFilterMenus();
+    });
+
+    const options = document.createElement('div');
+    options.className = 'table-filter-options';
+    const more = document.createElement('div');
+    more.className = 'table-filter-more';
+
+    function renderOptions() {
+      const query = search.value.trim().toLowerCase();
+      const filtered = values.filter(entry => !query || entry.label.toLowerCase().includes(query));
+      const shown = filtered.slice(0, 260);
+      options.replaceChildren();
+      shown.forEach(entry => {
+        const label = document.createElement('label');
+        label.className = 'table-filter-option';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = !selected || selected.has(entry.value);
+        checkbox.addEventListener('change', () => {
+          if (!selected) selected = new Set(values.map(value => value.value));
+          if (checkbox.checked) selected.add(entry.value);
+          else selected.delete(entry.value);
+          setTableColumnFilter(table, columnIndex, selected, values.length);
+        });
+        const text = document.createElement('span');
+        text.textContent = entry.label + ' (' + entry.count + ')';
+        label.appendChild(checkbox);
+        label.appendChild(text);
+        options.appendChild(label);
+      });
+      const hiddenCount = filtered.length - shown.length;
+      more.textContent = hiddenCount > 0 ? t('tableMoreValues', { count: String(hiddenCount) }) : '';
+    }
+
+    search.addEventListener('input', renderOptions);
+    menu.appendChild(title);
+    menu.appendChild(search);
+    menu.appendChild(options);
+    menu.appendChild(more);
+    menu.appendChild(clear);
+    shell.appendChild(menu);
+    renderOptions();
+    positionTableFilterMenu(menu, button);
+    window.setTimeout(() => search.focus(), 0);
+  }
+
+  function bindTablePan(wrap) {
+    if (!wrap || wrap.dataset.panBound === 'true') return;
+    wrap.dataset.panBound = 'true';
+    let suppressClick = false;
+
+    wrap.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      if (event.target.closest('button, input, textarea, select, a, .table-col-resizer, .table-shell-resizer, .table-filter-menu')) return;
+      if (wrap.scrollWidth <= wrap.clientWidth + 1 && wrap.scrollHeight <= wrap.clientHeight + 1) return;
+      if (event.target.closest('td, th') && !event.altKey) return;
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const startLeft = wrap.scrollLeft;
+      const startTop = wrap.scrollTop;
+      let moved = false;
+
+      function move(pointerEvent) {
+        const dx = pointerEvent.clientX - startX;
+        const dy = pointerEvent.clientY - startY;
+        if (!moved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
+          moved = true;
+          try {
+            wrap.setPointerCapture(event.pointerId);
+          } catch (error) {
+            // Pointer capture is optional; table panning still works without it.
+          }
+          wrap.classList.add('table-panning');
+          document.body.classList.add('table-dragging');
+        }
+        if (!moved) return;
+        pointerEvent.preventDefault();
+        wrap.scrollLeft = startLeft - dx;
+        wrap.scrollTop = startTop - dy;
+      }
+
+      function finish(pointerEvent) {
+        if (moved) {
+          try {
+            wrap.releasePointerCapture(pointerEvent.pointerId);
+          } catch (error) {
+            // Pointer capture can already be released by the browser.
+          }
+        }
+        wrap.classList.remove('table-panning');
+        document.body.classList.remove('table-dragging');
+        wrap.removeEventListener('pointermove', move);
+        wrap.removeEventListener('pointerup', finish);
+        wrap.removeEventListener('pointercancel', finish);
+        if (moved) {
+          suppressClick = true;
+          window.setTimeout(() => { suppressClick = false; }, 0);
+        }
+      }
+
+      wrap.addEventListener('pointermove', move);
+      wrap.addEventListener('pointerup', finish);
+      wrap.addEventListener('pointercancel', finish);
+    });
+
+    wrap.addEventListener('click', event => {
+      if (!suppressClick) return;
+      event.preventDefault();
+      event.stopPropagation();
+    }, true);
+  }
+
+  function enhanceReadingTable(table) {
+    if (!table || table.dataset.tableEnhanced === 'true') {
+      if (table) {
+        applyTableBoxLayout(table);
+        updateTableFilterButtons(table);
+      }
+      return;
+    }
+    const layoutKey = tableLayoutKey(table);
+    table.dataset.tableLayoutKey = layoutKey;
+    const savedLayout = sanitizeClientTableLayout(state.tableLayouts[layoutKey]);
+    const colCount = tableColumnCount(table);
+    if (savedLayout && Array.isArray(savedLayout.columnWidths) && savedLayout.columnWidths.length === colCount) {
+      table.__columnWidths = savedLayout.columnWidths.slice();
+    }
+    table.dataset.tableEnhanced = 'true';
+    table.classList.add('enhanced-table');
+    if (!(table.__tableFilters instanceof Map)) table.__tableFilters = new Map();
+    const headerCells = tableHeaderCells(table);
+    headerCells.forEach((cell, index) => prepareTableHeaderCell(table, cell, index));
+    initializeTableColumnWidths(table);
+    applyTableBoxLayout(table);
+    ensureTableShellResizer(table);
+    bindTablePan(table.closest('.table-wrap'));
+    updateTableFilterButtons(table);
+  }
+
+  function markImages(roots = [els.preview]) {
+    nodesInRoots(roots, 'img').forEach(img => {
       img.classList.add('doc-image');
       img.loading = 'lazy';
+      if (img.dataset.axisLoadBound !== 'true') {
+        img.dataset.axisLoadBound = 'true';
+        img.addEventListener('load', () => scheduleSourceAxisRender(80));
+      }
       if (!img.closest('figure')) {
         const figure = document.createElement('figure');
         figure.className = 'image-figure';
@@ -1181,8 +2308,8 @@
     return /^(?:[a-z]+:)?\/\//i.test(src) || src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('vscode-resource:') || src.startsWith('https:');
   }
 
-  function resolvePreviewImages() {
-    els.preview.querySelectorAll('img').forEach(img => {
+  function resolvePreviewImages(roots = [els.preview]) {
+    nodesInRoots(roots, 'img').forEach(img => {
       const rawSrc = img.getAttribute('src') || '';
       if (!rawSrc || isExternalUrl(rawSrc)) return;
       img.dataset.rawSrc = rawSrc;
@@ -1194,17 +2321,20 @@
     });
   }
 
-  function linkCitations() {
-    const walker = document.createTreeWalker(els.preview, NodeFilter.SHOW_TEXT, {
-      acceptNode(node) {
-        const parent = node.parentElement;
-        if (!parent) return NodeFilter.FILTER_REJECT;
-        if (parent.closest('a, pre, code, .mermaid, .reference-block')) return NodeFilter.FILTER_REJECT;
-        return /\[R\d+\]/.test(node.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
-      }
-    });
+  function linkCitations(roots = [els.preview]) {
     const nodes = [];
-    while (walker.nextNode()) nodes.push(walker.currentNode);
+    const list = Array.isArray(roots) ? roots : [roots];
+    for (const root of list) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          const parent = node.parentElement;
+          if (!parent) return NodeFilter.FILTER_REJECT;
+          if (parent.closest('a, pre, code, .mermaid, .reference-block')) return NodeFilter.FILTER_REJECT;
+          return /\[R\d+\]/.test(node.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        }
+      });
+      while (walker.nextNode()) nodes.push(walker.currentNode);
+    }
     nodes.forEach(node => {
       const fragment = document.createDocumentFragment();
       const parts = node.nodeValue.split(/(\[R\d+\])/g);
@@ -1226,17 +2356,20 @@
     });
   }
 
-  async function runRenderers() {
+  async function runRenderers(roots = [els.preview]) {
+    const renderRoots = Array.isArray(roots) ? roots.filter(Boolean) : [roots].filter(Boolean);
+    if (!renderRoots.length) return;
     if (window.mermaid) {
       try {
-        await window.mermaid.run({ nodes: Array.from(els.preview.querySelectorAll('.mermaid')) });
+        const mermaidNodes = nodesInRoots(renderRoots, '.mermaid');
+        if (mermaidNodes.length) await window.mermaid.run({ nodes: mermaidNodes });
       } catch (error) {
         setStatus(t('mermaidError'));
       }
     }
     if (window.MathJax && window.MathJax.typesetPromise) {
       try {
-        await window.MathJax.typesetPromise([els.preview]);
+        await window.MathJax.typesetPromise(renderRoots);
       } catch (error) {
         setStatus(t('mathError'));
       }
@@ -1249,10 +2382,229 @@
     renderOutlineList(els.previewTocNav, headings);
   }
 
+  function sourceLineRangeLabel(block) {
+    const start = Math.max(1, Number(block.start) + 1);
+    const end = Math.max(start, Number(block.end) + 1);
+    return start === end ? String(start) : start + '-' + end;
+  }
+
+  function axisBlockKind(block, element) {
+    if (!block) return t('axisBlock');
+    if (block.type === 'heading') return t('axisHeading');
+    if (block.type === 'table' || (element && element.querySelector('table'))) return t('axisTable');
+    if (block.type === 'math') return t('axisFormula');
+    if (block.type === 'code') return t('axisCode');
+    if (block.type === 'list') return t('axisList');
+    if (block.type === 'blockquote') return t('axisQuote');
+    if (block.type === 'reference') return t('axisReference');
+    if (block.type === 'frontmatter') return t('axisMetadata');
+    if (element && element.querySelector('.mermaid, .doc-diagram')) return t('axisDiagram');
+    if (element && element.querySelector('img, figure')) return t('axisFigure');
+    return t('axisParagraph');
+  }
+
+  function axisBlockClass(block, element) {
+    if (!block) return 'block';
+    if (block.type === 'table' || (element && element.querySelector('table'))) return 'table';
+    if (element && element.querySelector('img, figure')) return 'figure';
+    if (element && element.querySelector('.mermaid, .doc-diagram')) return 'diagram';
+    if (block.type === 'math') return 'math';
+    return String(block.type || 'block').replace(/[^a-z0-9_-]+/gi, '-').toLowerCase();
+  }
+
+  function axisBlockSummary(block, element) {
+    const text = blockPlainText(block || {});
+    const fallback = element ? (element.innerText || element.textContent || '') : '';
+    return String(text || fallback || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 220);
+  }
+
+  function offsetForSourceLine(value, line) {
+    const targetLine = Math.max(0, Math.round(Number(line) || 0));
+    let offset = 0;
+    let currentLine = 0;
+    const text = String(value || '');
+    while (currentLine < targetLine && offset < text.length) {
+      const next = text.indexOf('\n', offset);
+      if (next < 0) return text.length;
+      offset = next + 1;
+      currentLine += 1;
+    }
+    return offset;
+  }
+
+  function revealSourceLine(line) {
+    const sourceLine = Math.max(0, Math.round(Number(line) || 0));
+    if (!state.previewOnly && state.sourceCollapsed) {
+      setSourceCollapsed(false);
+    }
+    window.requestAnimationFrame(() => {
+      scrollEditorToLine(sourceLine);
+      if (state.previewOnly || !els.editor) return;
+      const start = offsetForSourceLine(els.editor.value, sourceLine);
+      const nextBreak = els.editor.value.indexOf('\n', start);
+      const end = nextBreak < 0 ? els.editor.value.length : nextBreak;
+      els.editor.focus();
+      els.editor.setSelectionRange(start, end);
+    });
+  }
+
+  function renderSourceAxis() {
+    if (!els.sourceAxis || !els.previewScroller) return;
+    const enabled = state.blocks.length > 0 && state.blockElements.length > 0;
+    els.previewScroller.classList.toggle('has-source-axis', enabled);
+    els.sourceAxis.innerHTML = '';
+    if (!enabled) {
+      els.sourceAxis.style.height = '0px';
+      state.sourceAxisMarkers = new Map();
+      state.activeSourceAxisMarker = null;
+      state.activeSourceAxisIndex = '';
+      return;
+    }
+
+    refreshPreviewBlockMetrics();
+    const fragment = document.createDocumentFragment();
+    const markers = new Map();
+    els.sourceAxis.style.height = Math.max(els.previewScroller.scrollHeight, els.preview.offsetHeight) + 'px';
+
+    state.blockElements.forEach((element, elementIndex) => {
+      const blockIndex = Number(element.dataset.blockIndex);
+      const block = state.blocks[blockIndex];
+      if (!block) return;
+      const top = Math.max(0, Number(state.blockTops[elementIndex]) || Math.round(element.offsetTop || 0));
+      const height = Math.max(18, Number(state.blockHeights[elementIndex]) || Math.round(element.offsetHeight || 0));
+      const kind = axisBlockKind(block, element);
+      const lines = sourceLineRangeLabel(block);
+      const summary = axisBlockSummary(block, element);
+      const marker = document.createElement('button');
+      marker.type = 'button';
+      marker.className = 'source-axis-marker source-axis-' + axisBlockClass(block, element);
+      marker.dataset.blockIndex = String(block.index);
+      marker.dataset.sourceStart = String(block.start);
+      marker.style.top = top + 'px';
+      marker.style.minHeight = Math.min(92, Math.max(22, height)) + 'px';
+      marker.title = [kind + ' · ' + t('sourceLineRange', { lines }), summary].filter(Boolean).join('\n');
+      marker.innerHTML = [
+        '<span class="source-axis-tick" aria-hidden="true"></span>',
+        '<span class="source-axis-text">',
+        '<span class="source-axis-lines">L' + escapeHtml(lines) + '</span>',
+        '<span class="source-axis-kind">' + escapeHtml(kind) + '</span>',
+        '</span>'
+      ].join('');
+      marker.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        revealSourceLine(block.start);
+      });
+      markers.set(String(block.index), marker);
+      fragment.appendChild(marker);
+    });
+    els.sourceAxis.appendChild(fragment);
+    state.sourceAxisMarkers = markers;
+    state.activeSourceAxisMarker = null;
+    state.activeSourceAxisIndex = '';
+    updateSourceAxisActive();
+  }
+
+  function scheduleSourceAxisRender(delay = 0) {
+    clearTimeout(state.sourceAxisTimer);
+    if (delay > 0) {
+      state.sourceAxisTimer = window.setTimeout(() => {
+        state.sourceAxisTimer = null;
+        scheduleSourceAxisRender();
+      }, delay);
+      return;
+    }
+    if (state.sourceAxisRaf) return;
+    state.sourceAxisRaf = window.requestAnimationFrame(() => {
+      state.sourceAxisRaf = 0;
+      renderSourceAxis();
+    });
+  }
+
+  function updateSourceAxisActive() {
+    if (!els.sourceAxis) return;
+    const block = visiblePreviewBlock();
+    const activeIndex = block ? String(block.dataset.blockIndex) : '';
+    if (state.activeSourceAxisIndex === activeIndex) return;
+    if (state.activeSourceAxisMarker) state.activeSourceAxisMarker.classList.remove('active');
+    const marker = activeIndex ? state.sourceAxisMarkers.get(activeIndex) || null : null;
+    if (marker) marker.classList.add('active');
+    state.activeSourceAxisMarker = marker;
+    state.activeSourceAxisIndex = activeIndex;
+  }
+
+  function scheduleSourceAxisActiveUpdate() {
+    if (state.sourceAxisActiveRaf) return;
+    state.sourceAxisActiveRaf = window.requestAnimationFrame(() => {
+      state.sourceAxisActiveRaf = 0;
+      updateSourceAxisActive();
+    });
+  }
+
+  function hideFileContextMenu() {
+    if (!els.fileContextMenu) return;
+    els.fileContextMenu.classList.remove('visible');
+    els.fileContextMenu.setAttribute('aria-hidden', 'true');
+    els.fileContextMenu.innerHTML = '';
+  }
+
+  function copyFilePath(file, pathKind) {
+    if (!file) return;
+    post({
+      type: 'copyFilePath',
+      uri: state.uri,
+      targetUri: file.uri || '',
+      targetName: file.name || '',
+      targetRelativePath: file.relativePath || '',
+      targetFsPath: file.fsPath || '',
+      pathKind
+    });
+    hideFileContextMenu();
+  }
+
+  function showFileContextMenu(file, event) {
+    if (!els.fileContextMenu || !file) return;
+    event.preventDefault();
+    event.stopPropagation();
+    hideHovercardNow();
+    els.fileContextMenu.innerHTML = '';
+    const actions = [
+      { kind: 'absolute', label: t('copyAbsolutePath') },
+      { kind: 'relative', label: t('copyRelativePath') }
+    ];
+    for (const action of actions) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'file-context-menu-item';
+      button.setAttribute('role', 'menuitem');
+      button.textContent = action.label;
+      button.addEventListener('click', () => copyFilePath(file, action.kind));
+      els.fileContextMenu.appendChild(button);
+    }
+    els.fileContextMenu.classList.add('visible');
+    els.fileContextMenu.setAttribute('aria-hidden', 'false');
+    const rect = els.fileContextMenu.getBoundingClientRect();
+    const left = Math.min(window.innerWidth - rect.width - 8, Math.max(8, event.clientX));
+    const top = Math.min(window.innerHeight - rect.height - 8, Math.max(8, event.clientY));
+    els.fileContextMenu.style.left = left + 'px';
+    els.fileContextMenu.style.top = top + 'px';
+  }
+
   function renderMarkdownFiles() {
     if (!els.markdownFileList) return;
+    const previousScrollTop = els.markdownFileList.scrollTop;
+    const files = sortMarkdownFiles(Array.isArray(state.markdownFiles) ? state.markdownFiles : []);
+    const signature = markdownFilesSignature(files);
+    if (signature === state.markdownFilesSignature && els.markdownFileList.childElementCount) {
+      updateMarkdownFileActiveRows(files);
+      openActiveMarkdownFolders(activeMarkdownFolderPaths(files));
+      return;
+    }
+    state.markdownFilesSignature = signature;
     els.markdownFileList.innerHTML = '';
-    const files = Array.isArray(state.markdownFiles) ? state.markdownFiles : [];
     if (!files.length) {
       const empty = document.createElement('div');
       empty.className = 'pane-subtitle';
@@ -1260,31 +2612,163 @@
       els.markdownFileList.appendChild(empty);
       return;
     }
-    for (const file of files) {
-      const row = document.createElement('div');
-      row.className = 'markdown-file-row' + (file.uri === state.uri || file.active ? ' active' : '') + (file.pinned ? ' pinned' : '');
-
-      const pin = document.createElement('input');
-      pin.type = 'checkbox';
-      pin.className = 'markdown-file-pin';
-      pin.checked = !!file.pinned;
-      pin.title = t('pinFileTitle');
-      pin.setAttribute('aria-label', t('pinFileTitle'));
-      pin.addEventListener('click', event => event.stopPropagation());
-      pin.addEventListener('change', () => setFilePinned(file.uri, pin.checked));
-
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'markdown-file-item';
-      button.title = (file.pinned ? t('pinnedFile') + ': ' : '') + (file.name || '');
-      button.dataset.uri = file.uri || '';
-      const label = document.createElement('span');
-      label.textContent = file.name || 'document.md';
-      button.appendChild(label);
-      button.addEventListener('click', () => switchMarkdownFile(file.uri));
-      row.append(pin, button);
-      els.markdownFileList.appendChild(row);
+    const pinned = files.filter(file => file.pinned);
+    const unpinned = files.filter(file => !file.pinned);
+    if (pinned.length) {
+      const pinnedSection = document.createElement('section');
+      pinnedSection.className = 'markdown-pinned-section';
+      const pinnedHeading = document.createElement('div');
+      pinnedHeading.className = 'markdown-tree-heading markdown-pinned-heading';
+      pinnedHeading.textContent = t('pinnedSection');
+      pinnedSection.appendChild(pinnedHeading);
+      pinned.forEach(file => {
+        pinnedSection.appendChild(markdownFileRow(file, 0, { pinnedFlat: true, fullPathTitle: true }));
+      });
+      els.markdownFileList.appendChild(pinnedSection);
     }
+    const tree = buildMarkdownFileTree(unpinned);
+    renderMarkdownTreeNode(tree, els.markdownFileList, 0, { activeFolders: activeMarkdownFolderPaths(files) });
+    els.markdownFileList.scrollTop = Math.min(previousScrollTop, els.markdownFileList.scrollHeight);
+  }
+
+  function markdownFilesSignature(files) {
+    return state.language + '|' + files.map(file => [
+      file.uri || '',
+      file.relativePath || '',
+      file.name || '',
+      file.pinned ? '1' : '0',
+      Number(file.pinRank) || 0,
+      Number(file.mtime) || 0
+    ].join('\u001f')).join('\u001e');
+  }
+
+  function updateMarkdownFileActiveRows(files) {
+    const activeUris = new Set(files.filter(file => file && (file.uri === state.uri || file.active)).map(file => file.uri));
+    els.markdownFileList.querySelectorAll('.markdown-file-row[data-uri]').forEach(row => {
+      row.classList.toggle('active', activeUris.has(row.dataset.uri));
+    });
+  }
+
+  function openActiveMarkdownFolders(activeFolders) {
+    if (!activeFolders || !activeFolders.size) return;
+    activeFolders.forEach(folderPath => {
+      const details = els.markdownFileList.querySelector('.markdown-folder[data-folder-path="' + CSS.escape(folderPath) + '"]');
+      if (details) details.open = true;
+    });
+  }
+
+  function markdownRelativePath(file) {
+    return String(file && (file.relativePath || file.name) || '').replace(/\\/g, '/');
+  }
+
+  function activeMarkdownFolderPaths(files) {
+    const active = files.find(file => file && (file.uri === state.uri || file.active));
+    const relativePath = markdownRelativePath(active);
+    const parts = relativePath.split('/').filter(Boolean);
+    parts.pop();
+    const paths = new Set();
+    let currentPath = '';
+    for (const part of parts) {
+      currentPath = currentPath ? currentPath + '/' + part : part;
+      paths.add(currentPath);
+    }
+    return paths;
+  }
+
+  function markdownFolderIsOpen(folderPath, activeFolders) {
+    if (activeFolders && activeFolders.has(folderPath)) return true;
+    if (!state.expandedFolders || typeof state.expandedFolders !== 'object') return false;
+    return state.expandedFolders[folderPath] === true;
+  }
+
+  function rememberMarkdownFolderOpen(folderPath, open) {
+    if (!folderPath) return;
+    state.expandedFolders = Object.assign({}, state.expandedFolders || {}, { [folderPath]: !!open });
+    persistWebviewState();
+  }
+
+  function markdownFileLabel(file, showRelativePath = false) {
+    if (showRelativePath && file.relativePath) return file.relativePath;
+    return file.name || (file.relativePath ? file.relativePath.split('/').pop() : 'document.md');
+  }
+
+  function markdownFileRow(file, depth, options = {}) {
+    const row = document.createElement('div');
+    row.className = 'markdown-file-row' + (file.uri === state.uri || file.active ? ' active' : '') + (file.pinned ? ' pinned' : '') + (options.pinnedFlat ? ' pinned-flat' : '');
+    row.style.setProperty('--file-depth', String(Math.max(0, depth)));
+    row.dataset.uri = file.uri || '';
+    if (options.fullPathTitle) row.title = file.fsPath || file.relativePath || file.name || '';
+    row.addEventListener('contextmenu', event => showFileContextMenu(file, event));
+
+    const pin = document.createElement('input');
+    pin.type = 'checkbox';
+    pin.className = 'markdown-file-pin';
+    pin.checked = !!file.pinned;
+    pin.title = t('pinFileTitle');
+    pin.setAttribute('aria-label', t('pinFileTitle'));
+    pin.addEventListener('click', event => event.stopPropagation());
+    pin.addEventListener('change', () => setFilePinned(file.uri, pin.checked));
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'markdown-file-item';
+    button.title = options.fullPathTitle
+      ? (file.fsPath || file.relativePath || file.name || '')
+      : (file.pinned ? t('pinnedFile') + ': ' : '') + (file.relativePath || file.name || '');
+    button.dataset.uri = file.uri || '';
+    const label = document.createElement('span');
+    label.textContent = markdownFileLabel(file, !!options.showRelativePath);
+    button.appendChild(label);
+    button.addEventListener('click', () => switchMarkdownFile(file.uri));
+    row.append(pin, button);
+    return row;
+  }
+
+  function buildMarkdownFileTree(files) {
+    const root = { name: '', folders: new Map(), files: [] };
+    files.forEach(file => {
+      const relativePath = markdownRelativePath(file);
+      const parts = relativePath.split('/').filter(Boolean);
+      const fileName = parts.pop() || file.name || 'document.md';
+      let node = root;
+      parts.forEach(part => {
+        if (!node.folders.has(part)) node.folders.set(part, { name: part, folders: new Map(), files: [] });
+        node = node.folders.get(part);
+      });
+      node.files.push(Object.assign({}, file, { name: file.name || fileName }));
+    });
+    return root;
+  }
+
+  function renderMarkdownTreeNode(node, container, depth, options = {}, parentPath = '') {
+    const folders = Array.from(node.folders.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true }));
+    for (const folder of folders) {
+      const folderPath = parentPath ? parentPath + '/' + folder.name : folder.name;
+      const details = document.createElement('details');
+      details.className = 'markdown-folder';
+      details.dataset.folderPath = folderPath;
+      details.open = markdownFolderIsOpen(folderPath, options.activeFolders);
+      details.style.setProperty('--folder-depth', String(Math.max(0, depth)));
+      const summary = document.createElement('summary');
+      summary.className = 'markdown-folder-summary';
+      summary.title = folderPath;
+      summary.textContent = folder.name;
+      details.appendChild(summary);
+      let folderToggleReady = false;
+      window.setTimeout(() => { folderToggleReady = true; }, 0);
+      details.addEventListener('toggle', () => {
+        if (!folderToggleReady) return;
+        rememberMarkdownFolderOpen(folderPath, details.open);
+      });
+      renderMarkdownTreeNode(folder, details, depth + 1, options, folderPath);
+      container.appendChild(details);
+    }
+    node.files
+      .sort((a, b) => {
+        if (Number(b.mtime) !== Number(a.mtime)) return Number(b.mtime) - Number(a.mtime);
+        return String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base', numeric: true });
+      })
+      .forEach(file => container.appendChild(markdownFileRow(file, depth)));
   }
 
   function sortMarkdownFiles(files) {
@@ -1294,7 +2778,7 @@
         return Number(a.pinRank) - Number(b.pinRank);
       }
       if (Number(b.mtime) !== Number(a.mtime)) return Number(b.mtime) - Number(a.mtime);
-      return String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base', numeric: true });
+      return String(a.relativePath || a.name || '').localeCompare(String(b.relativePath || b.name || ''), undefined, { sensitivity: 'base', numeric: true });
     });
   }
 
@@ -1326,6 +2810,30 @@
     requestDocumentSwitch(targetUri, { recordTarget: true });
   }
 
+  function isReaderDocumentHref(href) {
+    const raw = String(href || '').trim();
+    if (!raw || raw.startsWith('#')) return false;
+    if (/^(?:https?|mailto|data|blob|javascript|command|vscode):/i.test(raw)) return false;
+    const pathPart = raw.split('#')[0].split('?')[0];
+    return /\.(?:md|markdown|tex)$/i.test(pathPart);
+  }
+
+  function handlePreviewLinkClick(event) {
+    const anchor = event.target.closest('a[href]');
+    if (!anchor || !els.preview.contains(anchor)) return false;
+    const href = anchor.getAttribute('href') || '';
+    if (!isReaderDocumentHref(href)) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    saveReadingProgressNow();
+    post({
+      type: 'openLinkedMarkdown',
+      uri: state.uri,
+      href
+    });
+    return true;
+  }
+
   function requestDocumentSwitch(targetUri, options = {}) {
     if (!targetUri || targetUri === state.uri) return;
     clearTimeout(state.renderTimer);
@@ -1333,6 +2841,7 @@
     clearTimeout(state.patchTimer);
     clearTimeout(state.readingHistoryTimer);
     saveReadingProgressNow();
+    saveTableLayoutsNow();
     state.pendingDocumentSwitch = {
       targetUri,
       restoreProgress: options.restoreProgress || null,
@@ -1345,7 +2854,8 @@
       targetUri,
       markdown: state.markdown,
       baseMarkdownHash: state.markdownHash,
-      readingProgress: captureReadingProgress()
+      readingProgress: captureReadingProgress(),
+      tableLayouts: state.tableLayouts
     });
     setStatus(t('liveRender'));
   }
@@ -1462,6 +2972,17 @@
         ref.url ? '<div class="hover-body"><a href="' + escapeHtml(ref.url) + '">' + escapeHtml(t('openSource')) + '</a></div>' : ''
       ].join('');
     }
+    if (/^ref-[A-Za-z0-9_.:-]+$/i.test(targetId)) {
+      const label = targetId.replace(/^ref-/i, '');
+      const ref = state.refs.get(label) || state.refs.get(label.toLowerCase());
+      if (!ref) return null;
+      return [
+        '<div class="hover-kicker">' + escapeHtml(t('reference')) + '</div>',
+        '<div class="hover-title">[' + escapeHtml(ref.label) + '] ' + escapeHtml(ref.title) + '</div>',
+        ref.venue ? '<div class="hover-body"><strong>' + escapeHtml(t('venue')) + '</strong>' + escapeHtml(ref.venue) + '</div>' : '',
+        ref.meta ? '<div class="hover-body"><strong>' + escapeHtml(t('info')) + '</strong>' + escapeHtml(ref.meta) + '</div>' : ''
+      ].join('');
+    }
     const annotationId = anchor.dataset.annotationId;
     if (annotationId) {
       const annotation = state.annotations.find(entry => entry.id === annotationId);
@@ -1515,6 +3036,180 @@
     clearTimeout(state.hoverTimer);
     els.hovercard.classList.remove('visible');
     els.hovercard.setAttribute('aria-hidden', 'true');
+  }
+
+  function selectedPreviewText() {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || !selection.rangeCount) return '';
+    const range = selection.getRangeAt(0);
+    const container = elementForNode(range.commonAncestorContainer);
+    if (!container || !els.preview.contains(container)) return '';
+    return selection.toString().replace(/\s+/g, ' ').trim().slice(0, 160);
+  }
+
+  function openSearchBox() {
+    if (!els.searchBox || !els.searchInput) return;
+    const selectedText = selectedPreviewText();
+    els.searchBox.hidden = false;
+    els.searchBox.classList.add('visible');
+    els.searchBox.setAttribute('aria-hidden', 'false');
+    if (selectedText && !state.searchQuery) {
+      els.searchInput.value = selectedText;
+      refreshSearch();
+    } else {
+      els.searchInput.value = state.searchQuery || els.searchInput.value || '';
+      updateSearchCount();
+    }
+    window.setTimeout(() => {
+      els.searchInput.focus();
+      els.searchInput.select();
+    }, 0);
+  }
+
+  function closeSearchBox() {
+    if (!els.searchBox) return;
+    unwrapSearchHighlights();
+    state.searchQuery = '';
+    if (els.searchInput) els.searchInput.value = '';
+    updateSearchCount();
+    els.searchBox.classList.remove('visible');
+    els.searchBox.setAttribute('aria-hidden', 'true');
+    els.searchBox.hidden = true;
+  }
+
+  function unwrapSearchHighlights() {
+    if (!els.preview) return;
+    const marks = Array.from(els.preview.querySelectorAll('mark.search-hit'));
+    for (const mark of marks) {
+      const parent = mark.parentNode;
+      if (!parent) continue;
+      while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+      parent.removeChild(mark);
+      parent.normalize();
+    }
+    state.searchMatches = [];
+    state.searchIndex = -1;
+    state.searchActiveElement = null;
+  }
+
+  function updateSearchCount() {
+    if (!els.searchCount) return;
+    const total = state.searchMatches.length;
+    if (!state.searchQuery) {
+      els.searchCount.textContent = '';
+    } else if (!total) {
+      els.searchCount.textContent = t('searchNoMatches');
+    } else {
+      els.searchCount.textContent = t('searchCount', {
+        current: String(state.searchIndex + 1),
+        total: String(total)
+      });
+    }
+    if (els.searchPrev) els.searchPrev.disabled = total < 1;
+    if (els.searchNext) els.searchNext.disabled = total < 1;
+  }
+
+  function searchNodeAllowed(node, queryLower) {
+    if (!node || !node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+    const parent = node.parentElement;
+    if (!parent) return NodeFilter.FILTER_REJECT;
+    if (parent.closest('script, style, textarea, button, svg, mjx-container, .mermaid, .search-hit')) {
+      return NodeFilter.FILTER_REJECT;
+    }
+    return node.nodeValue.toLowerCase().includes(queryLower)
+      ? NodeFilter.FILTER_ACCEPT
+      : NodeFilter.FILTER_REJECT;
+  }
+
+  function collectSearchTextNodes(queryLower) {
+    const nodes = [];
+    const walker = document.createTreeWalker(els.preview, NodeFilter.SHOW_TEXT, {
+      acceptNode: node => searchNodeAllowed(node, queryLower)
+    });
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    return nodes;
+  }
+
+  function markSearchTextNode(node, query, queryLower) {
+    const text = node.nodeValue || '';
+    const lower = text.toLowerCase();
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    let index = lower.indexOf(queryLower);
+    while (index >= 0) {
+      if (index > cursor) fragment.appendChild(document.createTextNode(text.slice(cursor, index)));
+      const mark = document.createElement('mark');
+      mark.className = 'search-hit';
+      mark.textContent = text.slice(index, index + query.length);
+      fragment.appendChild(mark);
+      state.searchMatches.push(mark);
+      cursor = index + query.length;
+      index = lower.indexOf(queryLower, cursor);
+    }
+    if (cursor < text.length) fragment.appendChild(document.createTextNode(text.slice(cursor)));
+    node.parentNode.replaceChild(fragment, node);
+  }
+
+  function refreshSearch(options = {}) {
+    if (!els.preview || !els.searchInput) return;
+    const previousIndex = state.searchIndex;
+    const query = String(els.searchInput.value || '').trim();
+    unwrapSearchHighlights();
+    state.searchQuery = query;
+    if (!query) {
+      updateSearchCount();
+      return;
+    }
+    const queryLower = query.toLowerCase();
+    const nodes = collectSearchTextNodes(queryLower);
+    for (const node of nodes) markSearchTextNode(node, query, queryLower);
+    if (state.searchMatches.length) {
+      state.searchIndex = options.preserveIndex
+        ? clamp(previousIndex, 0, state.searchMatches.length - 1)
+        : 0;
+    }
+    updateSearchActive({ skipScroll: !!options.skipScroll });
+  }
+
+  function updateSearchActive(options = {}) {
+    if (state.searchActiveElement) state.searchActiveElement.classList.remove('active');
+    const match = state.searchMatches[state.searchIndex] || null;
+    state.searchActiveElement = match;
+    if (match) {
+      match.classList.add('active');
+      if (!options.skipScroll) revealSearchMatch(match);
+    }
+    updateSearchCount();
+  }
+
+  function revealSearchMatch(match) {
+    if (!match || !els.previewScroller) return;
+    const matchRect = match.getBoundingClientRect();
+    const scrollerRect = els.previewScroller.getBoundingClientRect();
+    const top = els.previewScroller.scrollTop + matchRect.top - scrollerRect.top - Math.max(48, els.previewScroller.clientHeight * 0.18);
+    setPreviewScrollTop(top);
+    scheduleReadingProgressSave(120);
+  }
+
+  function navigateSearch(delta) {
+    const total = state.searchMatches.length;
+    if (!total) return;
+    state.searchIndex = (state.searchIndex + delta + total) % total;
+    updateSearchActive();
+  }
+
+  function handleSearchInputKeydown(event) {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      event.stopPropagation();
+      navigateSearch(event.shiftKey ? -1 : 1);
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeSearchBox();
+      els.previewScroller.focus();
+    }
   }
 
   function elementForNode(node) {
@@ -1622,6 +3317,8 @@
   }
 
   function hideSelectionToolbar() {
+    const noteEditorVisible = els.selectionNoteEditor && !els.selectionNoteEditor.hidden;
+    if (!noteEditorVisible && !state.pendingAnnotationSelection && !els.selectionToolbar.classList.contains('visible')) return;
     state.pendingAnnotationSelection = null;
     hideNoteEditor();
     els.selectionToolbar.classList.remove('visible');
@@ -1991,7 +3688,7 @@
     els.previewScroller.scrollTop = normalizedPreviewScrollTop(railTargetTopFromEvent(event));
     scheduleScrollSync('preview');
     scheduleReadingProgressSave(120);
-    scheduleNoteMarginRender();
+    if (hasNoteAnnotations()) scheduleNoteMarginRender();
   }
 
   function finishRailPointerDrag(event) {
@@ -2098,12 +3795,24 @@
     }
   }
 
+  function hasNoteAnnotations() {
+    return Array.isArray(state.annotations) && state.annotations.some(annotation => annotation && annotation.type === 'note');
+  }
+
   function renderNoteMargin() {
     if (!els.noteMarginPanel) return;
     const notes = sanitizeClientAnnotations(state.annotations).filter(annotation => annotation.type === 'note');
     const paneWidth = els.previewPane ? els.previewPane.clientWidth : window.innerWidth;
     const paneHeight = els.previewScroller ? els.previewScroller.clientHeight : window.innerHeight;
     if (paneWidth < 320 || paneHeight < 120) return;
+    if (!notes.length) {
+      if (els.noteMarginPanel.childElementCount) els.noteMarginPanel.innerHTML = '';
+      if (els.noteConnectorLayer && els.noteConnectorLayer.childElementCount) els.noteConnectorLayer.innerHTML = '';
+      if (els.previewPane) {
+        els.previewPane.classList.remove('has-margin-notes', 'hide-margin-notes');
+      }
+      return;
+    }
     els.noteMarginPanel.innerHTML = '';
     if (els.noteConnectorLayer) els.noteConnectorLayer.innerHTML = '';
     const showMarginNotes = notes.length > 0 && paneWidth >= 520;
@@ -2201,8 +3910,10 @@
     els.noteConnectorLayer.append(path, startDot);
   }
 
-  function bindImageClicks() {
-    els.preview.querySelectorAll('img.doc-image').forEach(img => {
+  function bindImageClicks(roots = [els.preview]) {
+    nodesInRoots(roots, 'img.doc-image').forEach(img => {
+      if (img.dataset.lightboxBound === 'true') return;
+      img.dataset.lightboxBound = 'true';
       img.addEventListener('click', () => openLightboxSource(img.currentSrc || img.src, img.alt || ''));
       img.addEventListener('load', () => {
         scheduleBookmarkMarkersUpdate();
@@ -2384,7 +4095,7 @@
       ratio: maxTop > 0 ? Math.min(1, Math.max(0, scrollTop / maxTop)) : 0,
       sourceStart: Number.isFinite(sourceStart) ? sourceStart : -1,
       blockIndex: Number.isFinite(blockIndex) ? blockIndex : -1,
-      blockOffset: blockEl ? Math.round(scrollTop - blockEl.offsetTop) : 0,
+      blockOffset: blockEl ? Math.round(scrollTop - previewBlockTop(blockEl)) : 0,
       timestamp: Date.now()
     };
   }
@@ -2429,7 +4140,7 @@
     if (!progress) return 0;
     const blockEl = progressBlockElement(progress);
     if (blockEl) {
-      return normalizedPreviewScrollTop(blockEl.offsetTop + Math.round(Number(progress.blockOffset) || 0));
+      return normalizedPreviewScrollTop(previewBlockTop(blockEl) + Math.round(Number(progress.blockOffset) || 0));
     }
     const ratio = Number(progress.ratio);
     if (Number.isFinite(ratio) && ratio > 0) {
@@ -2491,7 +4202,7 @@
     const blockEl = previewBlockElementByIndex(block.index);
     if (!blockEl) return;
     state.scrollSyncLock = 'source';
-    setPreviewScrollTop(blockEl.offsetTop - els.previewScroller.clientHeight * 0.12);
+    setPreviewScrollTop(previewBlockTop(blockEl) - els.previewScroller.clientHeight * 0.12);
     clearTimeout(state.scrollLockTimer);
     state.scrollLockTimer = setTimeout(() => { state.scrollSyncLock = null; }, 180);
   }
@@ -2601,7 +4312,7 @@
     const blockEl = previewBlockElementByIndex(blockIndex);
     if (!blockEl) return;
     state.scrollSyncLock = 'source';
-    setPreviewScrollTop(blockEl.offsetTop - 24, { recordCurrent: true, recordTarget: true });
+    setPreviewScrollTop(previewBlockTop(blockEl) - 24, { recordCurrent: true, recordTarget: true });
     clearTimeout(state.scrollLockTimer);
     state.scrollLockTimer = setTimeout(() => { state.scrollSyncLock = null; }, 180);
     scheduleReadingProgressSave(120);
@@ -2679,6 +4390,16 @@
   }
 
   function markdownImageLine(saved) {
+    if (state.documentKind === 'latex') {
+      const safeCaption = saved.fileName.replace(/[{}\n\r]/g, ' ');
+      return [
+        '\\begin{figure}[htbp]',
+        '  \\centering',
+        '  \\includegraphics[width=0.9\\linewidth]{' + saved.markdownPath + '}',
+        '  \\caption{' + safeCaption + '}',
+        '\\end{figure}'
+      ].join('\n');
+    }
     return '![' + saved.fileName.replace(/[\[\]\n\r]/g, ' ') + '](' + saved.markdownPath + ')';
   }
 
@@ -2762,6 +4483,7 @@
       if (message.type === 'documentLoaded') {
         state.uri = message.uri || state.uri;
         state.fileName = message.fileName || state.fileName;
+        state.documentKind = message.documentKind || state.documentKind || 'markdown';
         state.markdownHash = message.markdownHash || state.markdownHash;
         state.imageMap = new Map();
         state.pendingImageTarget = null;
@@ -2771,14 +4493,19 @@
       }
       state.markdown = incomingMarkdown;
       state.committedMarkdown = state.markdown;
+      state.documentKind = message.documentKind || state.documentKind || 'markdown';
       state.markdownHash = message.markdownHash || state.markdownHash;
       if (Array.isArray(message.annotations)) state.annotations = sanitizeClientAnnotations(message.annotations);
+      if (message.tableLayouts && typeof message.tableLayouts === 'object') {
+        state.tableLayouts = sanitizeClientTableLayouts(message.tableLayouts);
+      }
       if (Array.isArray(message.markdownFiles)) state.markdownFiles = message.markdownFiles;
       els.editor.value = state.markdown;
       els.documentName.textContent = message.fileName || state.fileName;
       updateSourceStatus();
       renderMarkdownFiles();
-      renderPreview({ initialProgress: restoreProgress }).then(rendered => {
+      updateDocumentKindLabels();
+      renderPreview({ initialProgress: restoreProgress, forceFull: message.type === 'documentLoaded' }).then(rendered => {
         if (rendered === false) return;
         state.readingProgress = restoreProgress || null;
         restoreReadingProgress(state.readingProgress, { resetHistory: state.readingHistory.length === 0 });
@@ -2789,8 +4516,9 @@
           window.setTimeout(() => { state.readingHistoryApplying = false; }, 260);
         }
         scheduleNoteMarginRender();
-        window.setTimeout(scheduleNoteMarginRender, 140);
-        window.setTimeout(scheduleNoteMarginRender, 640);
+        if (hasNoteAnnotations()) {
+          window.setTimeout(scheduleNoteMarginRender, 180);
+        }
       });
       if (message.type === 'documentChanged' && message.changeReason === 'external') {
         setStatus(t('externalChangeReloaded'));
@@ -2819,12 +4547,21 @@
     }
     if (message.type === 'markdownCommitted') {
       if (message.uri !== state.uri) return;
+      state.documentKind = message.documentKind || state.documentKind || 'markdown';
       state.markdownHash = message.markdownHash || state.markdownHash;
       const saveId = Number(message.saveId);
       if (Number.isFinite(saveId)) state.pendingMarkdownSaves.delete(saveId);
       if (typeof message.markdown === 'string') {
         state.committedMarkdown = message.markdown;
       }
+    }
+    if (message.type === 'filePathCopied') {
+      if (message.uri !== state.uri) return;
+      setStatus(t('pathCopied'));
+    }
+    if (message.type === 'linkedMarkdownResolved') {
+      if (message.uri !== state.uri || !message.targetUri) return;
+      requestDocumentSwitch(message.targetUri, { recordTarget: true });
     }
     if (message.type === 'error') setStatus(message.message || t('operationFailed'));
   }
@@ -2849,6 +4586,13 @@
     if (els.fontSizeSelect) {
       els.fontSizeSelect.addEventListener('change', () => applyReaderFontSize(els.fontSizeSelect.value));
     }
+    if (els.searchInput) {
+      els.searchInput.addEventListener('input', () => refreshSearch());
+      els.searchInput.addEventListener('keydown', handleSearchInputKeydown);
+    }
+    if (els.searchPrev) els.searchPrev.addEventListener('click', () => navigateSearch(-1));
+    if (els.searchNext) els.searchNext.addEventListener('click', () => navigateSearch(1));
+    if (els.searchClose) els.searchClose.addEventListener('click', () => closeSearchBox());
     els.previewTocToggle.addEventListener('click', togglePreviewToc);
     els.previewNotesToggle.addEventListener('click', togglePreviewNotes);
     els.readingBack.addEventListener('click', () => navigateReadingHistory(-1));
@@ -2887,7 +4631,8 @@
       hideSelectionToolbar();
       scheduleScrollSync('preview');
       scheduleReadingProgressSave();
-      scheduleNoteMarginRender();
+      scheduleSourceAxisActiveUpdate();
+      if (hasNoteAnnotations()) scheduleNoteMarginRender();
       if (!state.readingHistoryApplying && state.scrollSyncLock !== 'source' && !state.previewScrollIntent) {
         state.previewScrollIntent = true;
       }
@@ -2903,6 +4648,7 @@
     els.previewScroller.addEventListener('pointercancel', scheduleReadingHistoryCapture);
 
     els.preview.addEventListener('click', event => {
+      if (handlePreviewLinkClick(event)) return;
       const block = event.target.closest('.md-block');
       if (!block) return;
       state.activeBlockIndex = Number(block.dataset.blockIndex);
@@ -2985,27 +4731,45 @@
     });
 
     document.addEventListener('keydown', event => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        openSearchBox();
+        return;
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
         event.preventDefault();
         saveMarkdown();
       }
       if (event.key === 'Escape') {
+        hideTableFilterMenus();
+        hideFileContextMenu();
+        if (els.searchBox && !els.searchBox.hidden) closeSearchBox();
         hideSelectionToolbar();
         closeLightbox();
       }
     });
     document.addEventListener('pointerdown', event => {
+      if (!event.target.closest('.table-filter-menu, .table-filter-button')) hideTableFilterMenus();
+      if (els.fileContextMenu && els.fileContextMenu.contains(event.target)) return;
+      hideFileContextMenu();
       if (els.selectionToolbar.contains(event.target) || els.preview.contains(event.target)) return;
       hideSelectionToolbar();
     });
 
     window.addEventListener('message', event => handleHostMessage(event.data));
-    window.addEventListener('beforeunload', saveReadingProgressNow);
+    window.addEventListener('beforeunload', () => {
+      saveReadingProgressNow();
+      saveTableLayoutsNow();
+    });
     window.addEventListener('resize', () => {
+      hideTableFilterMenus();
+      hideFileContextMenu();
       hideSelectionToolbar();
+      scheduleSourceAxisRender();
       scheduleBookmarkMarkersUpdate();
       scheduleNoteMarginRender();
     });
+    els.markdownFileList.addEventListener('scroll', hideFileContextMenu);
   }
 
   function bootstrap() {
@@ -3028,8 +4792,9 @@
       if (rendered === false) return;
       restoreReadingProgress(state.readingProgress, { resetHistory: true });
       scheduleNoteMarginRender();
-      window.setTimeout(scheduleNoteMarginRender, 140);
-      window.setTimeout(scheduleNoteMarginRender, 640);
+      if (hasNoteAnnotations()) {
+        window.setTimeout(scheduleNoteMarginRender, 180);
+      }
     });
     post({ type: 'ready' });
   }

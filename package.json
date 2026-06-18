@@ -1,7 +1,7 @@
 {
   "name": "read-md-as-html",
   "displayName": "read-md-as-html",
-  "description": "Read and edit Markdown as an HTML document inside VS Code.",
+  "description": "Read Markdown and LaTeX as an HTML document inside VS Code.",
   "version": "0.0.1",
   "publisher": "local",
   "repository": {
@@ -28,7 +28,7 @@
     "commands": [
       {
         "command": "readMdAsHtml.openCurrentMarkdown",
-        "title": "read-md-as-html: Open Current Markdown",
+        "title": "read-md-as-html: Open Current Document",
         "icon": {
           "light": "media/wand-markdown-light.svg",
           "dark": "media/wand-markdown-dark.svg"
@@ -40,21 +40,21 @@
       },
       {
         "command": "readMdAsHtml.exportCurrentMarkdownAsReaderHtml",
-        "title": "read-md-as-html: Export Current Markdown as Reader HTML"
+        "title": "read-md-as-html: Export Current Document as Reader HTML"
       }
     ],
     "menus": {
       "editor/title": [
         {
           "command": "readMdAsHtml.openCurrentMarkdown",
-          "when": "resourceLangId == markdown",
+          "when": "resourceLangId == markdown || resourceLangId == latex",
           "group": "navigation"
         }
       ],
       "explorer/context": [
         {
           "command": "readMdAsHtml.openCurrentMarkdown",
-          "when": "resourceExtname == .md || resourceExtname == .markdown",
+          "when": "resourceExtname == .md || resourceExtname == .markdown || resourceExtname == .tex",
           "group": "navigation"
         }
       ]

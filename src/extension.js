@@ -39,7 +39,7 @@ async function openStudio(context, uri, options) {
   );
   applyPanelIdentity(panel, mediaRoot, documentUri);
 
-  const state = await loadDocumentState(context, documentUri, options);
+  const state = await loadDocumentState(context, documentUri, Object.assign({}, options, { projectRoot: workspaceRoot }));
 
   panel.webview.html = await webviewHtml(context, panel.webview, state);
   applyPanelIdentity(panel, mediaRoot, documentUri);
@@ -50,17 +50,20 @@ async function openStudio(context, uri, options) {
     if (event.document.uri.toString() !== state.documentUri.toString()) return;
     const next = event.document.getText();
     if (next === state.markdown) return;
-    const embedded = annotationsFromMarkdown(next);
+    const embedded = annotationsFromSource(next, state.documentKind);
     state.markdown = next;
     state.markdownHash = hashText(state.markdown);
-    state.annotations = embedded.annotations;
+    state.annotations = state.documentKind === 'markdown' ? embedded.annotations : state.annotations;
     panel.webview.postMessage({
       type: 'documentChanged',
       uri: state.documentUri.toString(),
+      fileName: path.basename(state.documentUri.fsPath),
+      documentKind: state.documentKind,
       markdown: state.markdown,
       markdownHash: state.markdownHash,
       changeReason: 'editor',
-      annotations: state.annotations
+      annotations: state.annotations,
+      tableLayouts: state.tableLayouts
     });
   });
 
@@ -78,16 +81,23 @@ async function resolveMarkdownUri(uri) {
   const picked = await vscode.window.showOpenDialog({
     canSelectMany: false,
     filters: {
-      Markdown: ['md', 'markdown']
+      Documents: ['md', 'markdown', 'tex'],
+      Markdown: ['md', 'markdown'],
+      LaTeX: ['tex']
     },
-    title: 'Open Markdown in read-md-as-html'
+    title: 'Open Markdown or LaTeX in read-md-as-html'
   });
   return picked && picked[0] ? picked[0] : null;
 }
 
 function isMarkdownUri(uri) {
   const ext = path.extname(uri.fsPath).toLowerCase();
-  return ext === '.md' || ext === '.markdown';
+  return ext === '.md' || ext === '.markdown' || ext === '.tex';
+}
+
+function documentKindForUri(uri) {
+  const ext = path.extname(uri.fsPath).toLowerCase();
+  return ext === '.tex' ? 'latex' : 'markdown';
 }
 
 function workspaceRootFor(uri) {
@@ -95,40 +105,79 @@ function workspaceRootFor(uri) {
   return folder ? folder.uri : null;
 }
 
+function projectRootFor(uri) {
+  return workspaceRootFor(uri) || markdownDirectoryUri(uri);
+}
+
+function relativePathFromProject(rootUri, targetUri) {
+  return path.relative(rootUri.fsPath, targetUri.fsPath).replace(/\\/g, '/');
+}
+
+function uriIsInsideDirectory(rootUri, targetUri) {
+  const relative = path.relative(rootUri.fsPath, targetUri.fsPath);
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
 async function loadDocumentState(context, documentUri, options = {}) {
+  const projectRoot = options.projectRoot || projectRootFor(documentUri);
   const markdown = await readText(documentUri);
-  const embedded = annotationsFromMarkdown(markdown);
-  const documentCache = await documentCacheFor(context, documentUri);
+  const documentKind = documentKindForUri(documentUri);
+  const embedded = annotationsFromSource(markdown, documentKind);
+  const documentCache = await documentCacheFor(context, documentUri, projectRoot);
   return {
     documentUri,
+    projectRoot,
+    documentKind,
     markdown,
     markdownHash: hashText(markdown),
     previewOnly: !!options.previewOnly,
+    markdownFilesCache: Array.isArray(options.markdownFilesCache) ? options.markdownFilesCache : null,
+    markdownFilesCacheRoot: options.markdownFilesCacheRoot || '',
     documentCache,
     readingProgress: documentCache.readingProgress,
-    annotations: embedded.annotations.length ? embedded.annotations : documentCache.annotations
+    annotations: embedded.annotations.length ? embedded.annotations : documentCache.annotations,
+    tableLayouts: documentCache.tableLayouts
   };
 }
 
-async function markdownFilesFor(documentUri) {
-  const directory = markdownDirectoryUri(documentUri);
-  const folderState = await folderStateFor(documentUri);
+function activeMarkdownFileList(files, documentUri) {
+  const activeUri = documentUri.toString();
+  return Array.isArray(files)
+    ? files.map(file => Object.assign({}, file, { active: file.uri === activeUri }))
+    : [];
+}
+
+async function markdownFilesForState(state, options = {}) {
+  const root = state.projectRoot || projectRootFor(state.documentUri);
+  const rootKey = root.toString();
+  if (!options.force && Array.isArray(state.markdownFilesCache) && state.markdownFilesCacheRoot === rootKey) {
+    return activeMarkdownFileList(state.markdownFilesCache, state.documentUri);
+  }
+  const files = await markdownFilesFor(state.documentUri, root);
+  state.markdownFilesCache = files.map(file => Object.assign({}, file, { active: false }));
+  state.markdownFilesCacheRoot = rootKey;
+  return activeMarkdownFileList(state.markdownFilesCache, state.documentUri);
+}
+
+async function markdownFilesFor(documentUri, projectRoot = projectRootFor(documentUri)) {
+  const root = projectRoot;
+  const folderState = await folderStateFor(documentUri, root);
   const pinnedFiles = new Set(folderState.pinnedFiles);
   const pinnedRank = new Map(folderState.pinnedFiles.map((name, index) => [name, index]));
-  let entries = [];
+  let uris = [];
   try {
-    entries = await vscode.workspace.fs.readDirectory(directory);
+    uris = await collectProjectMarkdownUris(root);
   } catch (error) {
     return [];
   }
-  const markdownEntries = entries
-    .filter(([name, type]) => {
-      if (type === vscode.FileType.Directory) return false;
-      const ext = path.extname(name).toLowerCase();
-      return ext === '.md' || ext === '.markdown';
-    })
-  const files = await Promise.all(markdownEntries.map(async ([name]) => {
-      const uri = vscode.Uri.joinPath(directory, name);
+  const files = await Promise.all(uris
+    .filter(uri => isMarkdownUri(uri) && uriIsInsideDirectory(root, uri))
+    .map(async (uri) => {
+      const name = path.basename(uri.fsPath);
+      const relativePath = relativePathFromProject(root, uri);
+      const directory = path.posix.dirname(relativePath);
+      const pinKey = filePinKeyFromName(relativePath);
+      const legacyPinKey = filePinKeyFromName(name);
       let mtime = 0;
       try {
         const stat = await vscode.workspace.fs.stat(uri);
@@ -138,10 +187,15 @@ async function markdownFilesFor(documentUri) {
       }
       return {
         name,
+        relativePath,
+        directory: directory === '.' ? '' : directory,
+        depth: relativePath.split('/').length - 1,
         uri: uri.toString(),
+        documentKind: documentKindForUri(uri),
         mtime,
-        pinned: pinnedFiles.has(filePinKeyFromName(name)),
-        pinRank: pinnedRank.has(filePinKeyFromName(name)) ? pinnedRank.get(filePinKeyFromName(name)) : -1,
+        fsPath: uri.fsPath,
+        pinned: pinnedFiles.has(pinKey) || pinnedFiles.has(legacyPinKey),
+        pinRank: pinnedRank.has(pinKey) ? pinnedRank.get(pinKey) : (pinnedRank.has(legacyPinKey) ? pinnedRank.get(legacyPinKey) : -1),
         active: uri.toString() === documentUri.toString()
       };
     }));
@@ -149,13 +203,58 @@ async function markdownFilesFor(documentUri) {
     if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
     if (a.pinned && b.pinned && a.pinRank !== b.pinRank) return a.pinRank - b.pinRank;
     if (b.mtime !== a.mtime) return b.mtime - a.mtime;
-    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true });
+    return String(a.relativePath || a.name).localeCompare(String(b.relativePath || b.name), undefined, { sensitivity: 'base', numeric: true });
   });
 }
 
+const ignoredProjectDirectoryNames = new Set([
+  '.git',
+  '.hg',
+  '.svn',
+  '.md',
+  'node_modules',
+  'dist',
+  'build',
+  'out',
+  '.next',
+  'coverage',
+  '.venv',
+  'venv'
+]);
+
+function shouldIgnoreProjectDirectory(name) {
+  const normalized = String(name || '').normalize('NFC').toLowerCase();
+  return ignoredProjectDirectoryNames.has(normalized);
+}
+
+async function collectProjectMarkdownUris(rootUri, limit = 3000) {
+  const files = [];
+  const pending = [rootUri];
+  while (pending.length && files.length < limit) {
+    const directory = pending.shift();
+    let entries = [];
+    try {
+      entries = await vscode.workspace.fs.readDirectory(directory);
+    } catch (error) {
+      continue;
+    }
+    for (const [name, type] of entries) {
+      if (files.length >= limit) break;
+      const uri = vscode.Uri.joinPath(directory, name);
+      if ((type & vscode.FileType.Directory) === vscode.FileType.Directory) {
+        if (!shouldIgnoreProjectDirectory(name)) pending.push(uri);
+        continue;
+      }
+      if ((type & vscode.FileType.File) !== vscode.FileType.File) continue;
+      if (isMarkdownUri(uri)) files.push(uri);
+    }
+  }
+  return files;
+}
+
 function watchMarkdownDirectory(panel, state) {
-  const directory = markdownDirectoryUri(state.documentUri);
-  const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(directory, '*.{md,markdown}'));
+  const root = state.projectRoot || projectRootFor(state.documentUri);
+  const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root.fsPath, '**/*.{md,markdown,tex}'));
   let refreshTimer;
   let activeReloadTimer;
 
@@ -165,7 +264,7 @@ function watchMarkdownDirectory(panel, state) {
       panel.webview.postMessage({
         type: 'markdownFilesChanged',
         uri: state.documentUri.toString(),
-        markdownFiles: await markdownFilesFor(state.documentUri)
+        markdownFiles: await markdownFilesForState(state, { force: true })
       });
     }, 120);
   };
@@ -204,6 +303,68 @@ function applyPanelIdentity(panel, mediaRoot, documentUri) {
   panel.iconPath = { light: icon, dark: icon };
 }
 
+function relativePathForClipboard(currentUri, targetUri, projectRoot) {
+  const workspaceFolder = vscode.workspace.getWorkspaceFolder(targetUri);
+  const base = projectRoot ? projectRoot.fsPath : (workspaceFolder ? workspaceFolder.uri.fsPath : path.dirname(currentUri.fsPath));
+  const relative = path.relative(base, targetUri.fsPath) || path.basename(targetUri.fsPath);
+  return relative.replace(/\\/g, '/');
+}
+
+function comparableFsPath(value) {
+  const normalized = String(value || '').normalize('NFC');
+  return process.platform === 'win32' || process.platform === 'darwin' ? normalized.toLowerCase() : normalized;
+}
+
+function sameDirectory(leftUri, rightUri) {
+  return comparableFsPath(path.dirname(leftUri.fsPath)) === comparableFsPath(path.dirname(rightUri.fsPath));
+}
+
+function resolveFileListTargetUri(currentUri, message, projectRoot) {
+  const root = projectRoot || projectRootFor(currentUri);
+  const rawPath = String(message.targetFsPath || '').trim();
+  if (rawPath) return vscode.Uri.file(rawPath);
+
+  const rawRelativePath = String(message.targetRelativePath || '').trim();
+  if (rawRelativePath && !path.isAbsolute(rawRelativePath) && !rawRelativePath.split(/[\\/]+/).includes('..')) {
+    return vscode.Uri.joinPath(root, ...rawRelativePath.split(/[\\/]+/).filter(Boolean));
+  }
+
+  const rawUri = String(message.targetUri || '').trim();
+  if (rawUri) {
+    try {
+      const parsed = vscode.Uri.parse(rawUri);
+      if (parsed && parsed.fsPath) return parsed;
+    } catch (error) {
+      // Fall through to the same-folder name fallback.
+    }
+  }
+
+  const targetName = String(message.targetName || '').trim();
+  if (!targetName || targetName.includes('/') || targetName.includes('\\')) return null;
+  return vscode.Uri.joinPath(markdownDirectoryUri(currentUri), targetName);
+}
+
+async function resolveLinkedMarkdownUri(currentUri, href) {
+  const raw = String(href || '').trim();
+  if (!raw || raw.startsWith('#')) return null;
+  if (/^(?:https?|mailto|data|blob|javascript|command|vscode):/i.test(raw)) return null;
+  const withoutFragment = raw.split('#')[0].split('?')[0];
+  if (!withoutFragment) return null;
+  let targetUri;
+  try {
+    if (/^file:/i.test(withoutFragment)) {
+      targetUri = vscode.Uri.parse(withoutFragment);
+    } else {
+      targetUri = resolveRelativeUri(currentUri, withoutFragment);
+    }
+  } catch (error) {
+    return null;
+  }
+  if (!isMarkdownUri(targetUri)) return null;
+  if (!(await fileExists(targetUri))) return null;
+  return targetUri;
+}
+
 async function webviewHtml(context, webview, state) {
   const mediaRoot = vscode.Uri.joinPath(context.extensionUri, 'media');
   const htmlUri = vscode.Uri.joinPath(mediaRoot, 'index.html');
@@ -214,16 +375,18 @@ async function webviewHtml(context, webview, state) {
   const config = {
     uri: state.documentUri.toString(),
     fileName: path.basename(state.documentUri.fsPath),
+    documentKind: state.documentKind,
     markdown: state.markdown,
     markdownHash: state.markdownHash,
-    markdownFiles: await markdownFilesFor(state.documentUri),
+    markdownFiles: await markdownFilesForState(state),
     previewOnly: state.previewOnly,
     autoSave: vscode.workspace.getConfiguration('readMdAsHtml').get('autoSave', true),
     previewEditEnabled: vscode.workspace.getConfiguration('readMdAsHtml').get('previewEditEnabledByDefault', false),
     theme: vscode.workspace.getConfiguration('readMdAsHtml').get('theme', 'reader-light'),
     language: vscode.workspace.getConfiguration('readMdAsHtml').get('language', 'en'),
     readingProgress: state.readingProgress,
-    annotations: state.annotations
+    annotations: state.annotations,
+    tableLayouts: state.tableLayouts
   };
 
   return html
@@ -245,27 +408,31 @@ function wirePanelMessages(context, panel, state) {
           type: 'documentLoaded',
           uri: state.documentUri.toString(),
           fileName: path.basename(state.documentUri.fsPath),
+          documentKind: state.documentKind,
           markdown: state.markdown,
           markdownHash: state.markdownHash,
-          markdownFiles: await markdownFilesFor(state.documentUri),
+          markdownFiles: await markdownFilesForState(state),
           readingProgress: state.readingProgress,
-          annotations: state.annotations
+          annotations: state.annotations,
+          tableLayouts: state.tableLayouts
         });
       }
       if (message.type === 'updateMarkdown') {
         if (message.uri !== state.documentUri.toString()) return;
         const nextMarkdown = String(message.markdown || '');
         if (nextMarkdown === state.markdown && !message.saveToDisk) return;
-        const embedded = annotationsFromMarkdown(nextMarkdown);
-        const nextStoredMarkdown = markdownForStorage(nextMarkdown, embedded.annotations);
+        const embedded = annotationsFromSource(nextMarkdown, state.documentKind);
+        const nextAnnotations = state.documentKind === 'markdown' ? embedded.annotations : state.annotations;
+        const nextStoredMarkdown = sourceForStorage(nextMarkdown, nextAnnotations, state.documentKind);
         if (!(await canWriteMarkdown(panel, state, message, nextStoredMarkdown))) return;
-        state.annotations = embedded.annotations;
+        state.annotations = nextAnnotations;
         state.markdown = nextStoredMarkdown;
         await writeMarkdown(state.documentUri, state.markdown, { save: true });
         state.markdownHash = hashText(state.markdown);
         panel.webview.postMessage({
           type: 'markdownCommitted',
           uri: state.documentUri.toString(),
+          documentKind: state.documentKind,
           markdownHash: state.markdownHash,
           markdown: state.markdown,
           saveId: message.saveId
@@ -274,18 +441,22 @@ function wirePanelMessages(context, panel, state) {
       if (message.type === 'switchDocument') {
         if (message.uri !== state.documentUri.toString()) return;
         const targetUri = vscode.Uri.parse(String(message.targetUri || ''));
-        if (!isMarkdownUri(targetUri) || path.dirname(targetUri.fsPath) !== path.dirname(state.documentUri.fsPath)) return;
+        if (!isMarkdownUri(targetUri) || !uriIsInsideDirectory(state.projectRoot || projectRootFor(state.documentUri), targetUri)) return;
         const progress = sanitizeReadingProgress(message.readingProgress);
-        if (progress) {
+        const tableLayouts = sanitizeTableLayouts(message.tableLayouts);
+        state.tableLayouts = tableLayouts;
+        if (progress || Object.keys(tableLayouts).length) {
           state.readingProgress = progress;
-          await writeDocumentCache(state.documentUri, state);
+          await writeDocumentCache(state.documentUri, state, state.projectRoot);
         }
         if (typeof message.markdown === 'string') {
           const currentMarkdown = String(message.markdown);
           if (currentMarkdown !== state.markdown) {
-            const embedded = annotationsFromMarkdown(currentMarkdown);
-            const nextAnnotations = embedded.annotations.length ? embedded.annotations : state.annotations;
-            const nextStoredMarkdown = markdownForStorage(currentMarkdown, nextAnnotations);
+            const embedded = annotationsFromSource(currentMarkdown, state.documentKind);
+            const nextAnnotations = state.documentKind === 'markdown'
+              ? (embedded.annotations.length ? embedded.annotations : state.annotations)
+              : state.annotations;
+            const nextStoredMarkdown = sourceForStorage(currentMarkdown, nextAnnotations, state.documentKind);
             if (!(await canWriteMarkdown(panel, state, message, nextStoredMarkdown))) return;
             state.annotations = nextAnnotations;
             state.markdown = nextStoredMarkdown;
@@ -293,24 +464,34 @@ function wirePanelMessages(context, panel, state) {
             state.markdownHash = hashText(state.markdown);
           }
         }
-        const nextState = await loadDocumentState(context, targetUri, { previewOnly: state.previewOnly });
+        const nextState = await loadDocumentState(context, targetUri, {
+          previewOnly: state.previewOnly,
+          projectRoot: state.projectRoot,
+          markdownFilesCache: state.markdownFilesCache,
+          markdownFilesCacheRoot: state.markdownFilesCacheRoot
+        });
         state.documentUri = nextState.documentUri;
+        state.projectRoot = nextState.projectRoot;
+        state.documentKind = nextState.documentKind;
         state.markdown = nextState.markdown;
         state.markdownHash = nextState.markdownHash;
         state.documentCache = nextState.documentCache;
         state.readingProgress = nextState.readingProgress;
         state.annotations = nextState.annotations;
+        state.tableLayouts = nextState.tableLayouts;
         const mediaRoot = vscode.Uri.joinPath(context.extensionUri, 'media');
         applyPanelIdentity(panel, mediaRoot, state.documentUri);
         panel.webview.postMessage({
           type: 'documentLoaded',
           uri: state.documentUri.toString(),
           fileName: path.basename(state.documentUri.fsPath),
+          documentKind: state.documentKind,
           markdown: state.markdown,
           markdownHash: state.markdownHash,
-          markdownFiles: await markdownFilesFor(state.documentUri),
+          markdownFiles: await markdownFilesForState(state),
           readingProgress: state.readingProgress,
-          annotations: state.annotations
+          annotations: state.annotations,
+          tableLayouts: state.tableLayouts
         });
       }
       if (message.type === 'resolveImage') {
@@ -323,6 +504,35 @@ function wirePanelMessages(context, panel, state) {
           webviewUri: exists ? String(panel.webview.asWebviewUri(imageUri)) : ''
         });
       }
+      if (message.type === 'copyFilePath') {
+        if (message.uri !== state.documentUri.toString()) return;
+        const targetUri = resolveFileListTargetUri(state.documentUri, message, state.projectRoot);
+        if (!targetUri || !isMarkdownUri(targetUri) || !uriIsInsideDirectory(state.projectRoot || projectRootFor(state.documentUri), targetUri)) return;
+        const pathKind = String(message.pathKind || 'absolute');
+        const clipboardText = pathKind === 'relative'
+          ? relativePathForClipboard(state.documentUri, targetUri, state.projectRoot)
+          : targetUri.fsPath;
+        await vscode.env.clipboard.writeText(clipboardText);
+        panel.webview.postMessage({
+          type: 'filePathCopied',
+          uri: state.documentUri.toString(),
+          pathKind
+        });
+      }
+      if (message.type === 'openLinkedMarkdown') {
+        if (message.uri !== state.documentUri.toString()) return;
+        const targetUri = await resolveLinkedMarkdownUri(state.documentUri, String(message.href || ''));
+        if (!targetUri) return;
+        if (path.dirname(targetUri.fsPath) === path.dirname(state.documentUri.fsPath)) {
+          panel.webview.postMessage({
+            type: 'linkedMarkdownResolved',
+            uri: state.documentUri.toString(),
+            targetUri: targetUri.toString()
+          });
+        } else {
+          await openStudio(context, targetUri, { previewOnly: state.previewOnly });
+        }
+      }
       if (message.type === 'saveImage') {
         if (message.uri !== state.documentUri.toString()) return;
         const saved = await savePastedImage(panel.webview, state.documentUri, message);
@@ -334,7 +544,7 @@ function wirePanelMessages(context, panel, state) {
         });
       }
       if (message.type === 'exportHtml') {
-        await saveExportHtml(state.documentUri, String(message.html || ''));
+        await saveExportHtml(state.documentUri, String(message.html || ''), state.projectRoot);
       }
       if (message.type === 'updateTheme') {
         const theme = String(message.theme || 'reader-light');
@@ -351,16 +561,16 @@ function wirePanelMessages(context, panel, state) {
       if (message.type === 'setFilePinned') {
         if (message.uri !== state.documentUri.toString()) return;
         const targetUri = vscode.Uri.parse(String(message.targetUri || ''));
-        if (!isMarkdownUri(targetUri) || path.dirname(targetUri.fsPath) !== path.dirname(state.documentUri.fsPath)) return;
-        const folderState = await folderStateFor(state.documentUri);
-        const pinKey = filePinKeyFromName(path.basename(targetUri.fsPath));
+        if (!isMarkdownUri(targetUri) || !uriIsInsideDirectory(state.projectRoot || projectRootFor(state.documentUri), targetUri)) return;
+        const folderState = await folderStateFor(state.documentUri, state.projectRoot);
+        const pinKey = filePinKeyFromName(relativePathFromProject(state.projectRoot || projectRootFor(state.documentUri), targetUri));
         const pinnedFiles = folderState.pinnedFiles.filter(name => name !== pinKey);
         if (message.pinned) pinnedFiles.unshift(pinKey);
-        await writeFolderState(state.documentUri, { pinnedFiles });
+        await writeFolderState(state.documentUri, { pinnedFiles }, state.projectRoot);
         panel.webview.postMessage({
           type: 'markdownFilesChanged',
           uri: state.documentUri.toString(),
-          markdownFiles: await markdownFilesFor(state.documentUri)
+          markdownFiles: await markdownFilesForState(state, { force: true })
         });
       }
       if (message.type === 'updateReadingProgress') {
@@ -368,7 +578,7 @@ function wirePanelMessages(context, panel, state) {
         const progress = sanitizeReadingProgress(message.progress);
         if (progress) {
           state.readingProgress = progress;
-          await writeDocumentCache(state.documentUri, state);
+          await writeDocumentCache(state.documentUri, state, state.projectRoot);
           await clearLegacyState(context, state.documentUri);
         }
       }
@@ -378,23 +588,37 @@ function wirePanelMessages(context, panel, state) {
         const currentMarkdown = typeof message.markdown === 'string'
           ? String(message.markdown)
           : await currentMarkdownFor(state.documentUri);
-        const nextStoredMarkdown = markdownForStorage(currentMarkdown || state.markdown, nextAnnotations);
+        const nextStoredMarkdown = sourceForStorage(currentMarkdown || state.markdown, nextAnnotations, state.documentKind);
         if (!(await canWriteMarkdown(panel, state, message, nextStoredMarkdown))) return;
         state.annotations = nextAnnotations;
         state.markdown = nextStoredMarkdown;
-        await writeMarkdown(state.documentUri, state.markdown, { save: true });
+        if (state.documentKind === 'markdown') {
+          await writeMarkdown(state.documentUri, state.markdown, { save: true });
+        }
         state.markdownHash = hashText(state.markdown);
         panel.webview.postMessage({
           type: 'documentChanged',
           uri: state.documentUri.toString(),
           fileName: path.basename(state.documentUri.fsPath),
+          documentKind: state.documentKind,
           markdown: state.markdown,
           markdownHash: state.markdownHash,
           changeReason: 'annotation',
           readingProgress: state.readingProgress,
-          annotations: state.annotations
+          annotations: state.annotations,
+          tableLayouts: state.tableLayouts
         });
-        await writeDocumentCache(state.documentUri, { readingProgress: state.readingProgress, annotations: [] });
+        await writeDocumentCache(state.documentUri, {
+          readingProgress: state.readingProgress,
+          annotations: state.annotations,
+          tableLayouts: state.tableLayouts
+        }, state.projectRoot);
+        await clearLegacyState(context, state.documentUri);
+      }
+      if (message.type === 'updateTableLayouts') {
+        if (message.uri !== state.documentUri.toString()) return;
+        state.tableLayouts = sanitizeTableLayouts(message.tableLayouts);
+        await writeDocumentCache(state.documentUri, state, state.projectRoot);
         await clearLegacyState(context, state.documentUri);
       }
     } catch (error) {
@@ -427,6 +651,34 @@ function sanitizeReadingProgress(progress) {
     blockOffset: Math.round(finiteNumber(progress.blockOffset)),
     timestamp: Math.max(0, Math.round(finiteNumber(progress.timestamp, Date.now())))
   };
+}
+
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, Math.round(finiteNumber(value))));
+}
+
+function sanitizeTableLayouts(layouts) {
+  if (!layouts || typeof layouts !== 'object' || Array.isArray(layouts)) return {};
+  const clean = {};
+  for (const [rawKey, rawLayout] of Object.entries(layouts).slice(0, 500)) {
+    const key = String(rawKey || '').slice(0, 220);
+    if (!key || !rawLayout || typeof rawLayout !== 'object' || Array.isArray(rawLayout)) continue;
+    const layout = {};
+    if (Number.isFinite(Number(rawLayout.width))) layout.width = clampNumber(rawLayout.width, 160, 4000);
+    if (Number.isFinite(Number(rawLayout.height))) layout.height = clampNumber(rawLayout.height, 100, 3000);
+    if (Array.isArray(rawLayout.columnWidths)) {
+      layout.columnWidths = rawLayout.columnWidths
+        .slice(0, 80)
+        .map(width => clampNumber(width, 48, 2000));
+    }
+    if (Number.isFinite(Number(rawLayout.updatedAt))) {
+      layout.updatedAt = Math.max(0, Math.round(Number(rawLayout.updatedAt)));
+    }
+    if (layout.width || layout.height || (layout.columnWidths && layout.columnWidths.length)) {
+      clean[key] = layout;
+    }
+  }
+  return clean;
 }
 
 function trimText(value, maxLength) {
@@ -482,6 +734,11 @@ function annotationsFromMarkdown(markdown) {
   }
 }
 
+function annotationsFromSource(source, documentKind) {
+  if (documentKind === 'markdown') return annotationsFromMarkdown(source);
+  return { markdown: String(source || ''), annotations: [] };
+}
+
 function stripAnnotationBlock(markdown) {
   return annotationsFromMarkdown(markdown).markdown;
 }
@@ -498,6 +755,11 @@ function markdownForStorage(markdown, annotations) {
   const cleanAnnotations = sanitizeAnnotations(annotations);
   if (cleanAnnotations.length) return markdownWithAnnotations(markdown, cleanAnnotations);
   return markdownWithoutAnnotationBlock(markdown);
+}
+
+function sourceForStorage(source, annotations, documentKind) {
+  if (documentKind === 'markdown') return markdownForStorage(source, annotations);
+  return String(source || '');
 }
 
 function markdownWithAnnotations(markdown, annotations) {
@@ -531,28 +793,47 @@ function markdownDirectoryUri(markdownUri) {
   return vscode.Uri.file(path.dirname(markdownUri.fsPath));
 }
 
-function cacheDirectoryUri(markdownUri) {
-  return vscode.Uri.joinPath(markdownDirectoryUri(markdownUri), '.md');
+function cacheDirectoryUri(markdownUri, projectRoot = projectRootFor(markdownUri)) {
+  return vscode.Uri.joinPath(projectRoot, '.md');
 }
 
-function stateCacheUri(markdownUri) {
-  return vscode.Uri.joinPath(cacheDirectoryUri(markdownUri), `${fileNameSafe(path.basename(markdownUri.fsPath))}.read-md-as-html.json`);
+function projectCacheDirectoryUri(markdownUri, projectRoot = projectRootFor(markdownUri)) {
+  return vscode.Uri.joinPath(projectRoot, '.md');
 }
 
-function folderStateCacheUri(markdownUri) {
-  return vscode.Uri.joinPath(cacheDirectoryUri(markdownUri), 'read-md-as-html.folder.json');
+function markdownCacheFileStem(markdownUri, projectRoot = projectRootFor(markdownUri)) {
+  const relativePath = uriIsInsideDirectory(projectRoot, markdownUri)
+    ? relativePathFromProject(projectRoot, markdownUri)
+    : path.basename(markdownUri.fsPath);
+  return fileNameSafe(relativePath.replace(/\.(md|markdown|tex)$/i, ''));
 }
 
-function defaultExportHtmlUri(markdownUri) {
-  const basename = path.basename(markdownUri.fsPath).replace(/\.(md|markdown)$/i, '');
-  return vscode.Uri.joinPath(cacheDirectoryUri(markdownUri), `${fileNameSafe(basename)}.html`);
+function stateCacheUri(markdownUri, projectRoot = projectRootFor(markdownUri)) {
+  return vscode.Uri.joinPath(cacheDirectoryUri(markdownUri, projectRoot), `${markdownCacheFileStem(markdownUri, projectRoot)}.read-md-as-html.json`);
+}
+
+function legacyStateCacheUri(markdownUri) {
+  return vscode.Uri.joinPath(vscode.Uri.joinPath(markdownDirectoryUri(markdownUri), '.md'), `${fileNameSafe(path.basename(markdownUri.fsPath))}.read-md-as-html.json`);
+}
+
+function legacyFolderStateCacheUri(markdownUri) {
+  return vscode.Uri.joinPath(vscode.Uri.joinPath(markdownDirectoryUri(markdownUri), '.md'), 'read-md-as-html.folder.json');
+}
+
+function folderStateCacheUri(markdownUri, projectRoot = projectRootFor(markdownUri)) {
+  return vscode.Uri.joinPath(projectCacheDirectoryUri(markdownUri, projectRoot), 'read-md-as-html.folder.json');
+}
+
+function defaultExportHtmlUri(markdownUri, projectRoot = projectRootFor(markdownUri)) {
+  return vscode.Uri.joinPath(cacheDirectoryUri(markdownUri, projectRoot), `${markdownCacheFileStem(markdownUri, projectRoot)}.html`);
 }
 
 function defaultDocumentCache() {
   return {
     version: 1,
     readingProgress: null,
-    annotations: []
+    annotations: [],
+    tableLayouts: {}
   };
 }
 
@@ -560,12 +841,15 @@ function sanitizeDocumentCache(cache) {
   return {
     version: 1,
     readingProgress: sanitizeReadingProgress(cache && cache.readingProgress),
-    annotations: sanitizeAnnotations(cache && cache.annotations)
+    annotations: sanitizeAnnotations(cache && cache.annotations),
+    tableLayouts: sanitizeTableLayouts(cache && cache.tableLayouts)
   };
 }
 
 function filePinKeyFromName(name) {
-  return String(name || '').trim().toLowerCase();
+  const text = String(name || '');
+  const normalized = typeof text.normalize === 'function' ? text.normalize('NFC') : text;
+  return normalized.trim().toLowerCase();
 }
 
 function defaultFolderState() {
@@ -583,27 +867,44 @@ function sanitizeFolderState(state) {
   };
 }
 
-async function folderStateFor(markdownUri) {
+async function folderStateFor(markdownUri, projectRoot = projectRootFor(markdownUri)) {
+  let current = defaultFolderState();
   try {
-    return sanitizeFolderState(JSON.parse(await readText(folderStateCacheUri(markdownUri))));
+    current = sanitizeFolderState(JSON.parse(await readText(folderStateCacheUri(markdownUri, projectRoot))));
   } catch (error) {
-    return defaultFolderState();
+    // Missing project-level folder state is fine; older versions may have stored it beside the Markdown file.
   }
+  if (current.pinnedFiles.length) return current;
+
+  try {
+    const legacy = sanitizeFolderState(JSON.parse(await readText(legacyFolderStateCacheUri(markdownUri))));
+    if (legacy.pinnedFiles.length) {
+      await writeFolderState(markdownUri, legacy, projectRoot);
+      return legacy;
+    }
+  } catch (error) {
+    // Legacy per-folder state is optional.
+  }
+  return current;
 }
 
-async function writeFolderState(markdownUri, state) {
+async function writeFolderState(markdownUri, state, projectRoot = projectRootFor(markdownUri)) {
   const folderState = sanitizeFolderState(state);
   const payload = {
     version: folderState.version,
     updatedAt: new Date().toISOString(),
     pinnedFiles: folderState.pinnedFiles
   };
-  await ensureCacheDirectory(markdownUri);
-  await vscode.workspace.fs.writeFile(folderStateCacheUri(markdownUri), textEncoder.encode(JSON.stringify(payload, null, 2) + '\n'));
+  await ensureProjectCacheDirectory(markdownUri, projectRoot);
+  await vscode.workspace.fs.writeFile(folderStateCacheUri(markdownUri, projectRoot), textEncoder.encode(JSON.stringify(payload, null, 2) + '\n'));
 }
 
-async function documentCacheFor(context, uri) {
-  const cacheUri = stateCacheUri(uri);
+function documentCacheHasContent(cache) {
+  return !!(cache && (cache.readingProgress || cache.annotations.length || Object.keys(cache.tableLayouts || {}).length));
+}
+
+async function documentCacheFor(context, uri, projectRoot = projectRootFor(uri)) {
+  const cacheUri = stateCacheUri(uri, projectRoot);
   try {
     const cache = sanitizeDocumentCache(JSON.parse(await readText(cacheUri)));
     const legacy = legacyDocumentCache(context, uri);
@@ -616,9 +917,20 @@ async function documentCacheFor(context, uri) {
     // Missing or invalid sidecar state should not block opening the Markdown file.
   }
 
+  try {
+    const legacySidecar = sanitizeDocumentCache(JSON.parse(await readText(legacyStateCacheUri(uri))));
+    if (documentCacheHasContent(legacySidecar)) {
+      await writeDocumentCache(uri, legacySidecar, projectRoot);
+      await clearLegacyState(context, uri);
+      return legacySidecar;
+    }
+  } catch (error) {
+    // Older per-folder sidecar state is optional.
+  }
+
   const legacyCache = legacyDocumentCache(context, uri);
-  if (legacyCache.readingProgress || legacyCache.annotations.length) {
-    await writeDocumentCache(uri, legacyCache);
+  if (documentCacheHasContent(legacyCache)) {
+    await writeDocumentCache(uri, legacyCache, projectRoot);
     await clearLegacyState(context, uri);
     return legacyCache;
   }
@@ -652,20 +964,22 @@ async function reloadMarkdownFromDisk(panel, state, options = {}) {
   const currentMarkdown = await currentMarkdownFor(state.documentUri);
   const currentHash = hashText(currentMarkdown);
   if (currentHash === state.markdownHash && !options.force) return;
-  const embedded = annotationsFromMarkdown(currentMarkdown);
+  const embedded = annotationsFromSource(currentMarkdown, state.documentKind);
   state.markdown = currentMarkdown;
   state.markdownHash = currentHash;
-  state.annotations = embedded.annotations;
+  state.annotations = state.documentKind === 'markdown' ? embedded.annotations : state.annotations;
   panel.webview.postMessage({
     type: 'documentChanged',
     uri: state.documentUri.toString(),
     fileName: path.basename(state.documentUri.fsPath),
+    documentKind: state.documentKind,
     markdown: state.markdown,
     markdownHash: state.markdownHash,
     changeReason: options.reason || 'external',
     forceReload: !!options.force,
     readingProgress: state.readingProgress,
-    annotations: state.annotations
+    annotations: state.annotations,
+    tableLayouts: state.tableLayouts
   });
 }
 
@@ -682,19 +996,26 @@ async function canWriteMarkdown(panel, state, message, nextMarkdown) {
   return false;
 }
 
-async function writeDocumentCache(markdownUri, state) {
+async function writeDocumentCache(markdownUri, state, projectRoot = projectRootFor(markdownUri)) {
+  const storeAnnotationsInCache = documentKindForUri(markdownUri) !== 'markdown';
   const cache = sanitizeDocumentCache({
     readingProgress: state.readingProgress,
-    annotations: []
+    annotations: storeAnnotationsInCache ? state.annotations : [],
+    tableLayouts: state.tableLayouts
   });
   const payload = {
     version: cache.version,
     markdownFile: path.basename(markdownUri.fsPath),
+    markdownPath: uriIsInsideDirectory(projectRoot, markdownUri)
+      ? relativePathFromProject(projectRoot, markdownUri)
+      : path.basename(markdownUri.fsPath),
     updatedAt: new Date().toISOString(),
-    readingProgress: cache.readingProgress
+    readingProgress: cache.readingProgress,
+    tableLayouts: cache.tableLayouts
   };
-  await ensureCacheDirectory(markdownUri);
-  await vscode.workspace.fs.writeFile(stateCacheUri(markdownUri), textEncoder.encode(JSON.stringify(payload, null, 2) + '\n'));
+  if (cache.annotations.length) payload.annotations = cache.annotations;
+  await ensureCacheDirectory(markdownUri, projectRoot);
+  await vscode.workspace.fs.writeFile(stateCacheUri(markdownUri, projectRoot), textEncoder.encode(JSON.stringify(payload, null, 2) + '\n'));
 }
 
 async function clearLegacyState(context, uri) {
@@ -745,10 +1066,10 @@ async function savePastedImage(webview, markdownUri, message) {
   };
 }
 
-async function saveExportHtml(markdownUri, html) {
-  await ensureCacheDirectory(markdownUri);
+async function saveExportHtml(markdownUri, html, projectRoot = projectRootFor(markdownUri)) {
+  await ensureCacheDirectory(markdownUri, projectRoot);
   const target = await vscode.window.showSaveDialog({
-    defaultUri: defaultExportHtmlUri(markdownUri),
+    defaultUri: defaultExportHtmlUri(markdownUri, projectRoot),
     filters: {
       HTML: ['html']
     },
@@ -776,7 +1097,7 @@ async function exportCurrentMarkdown(context, uri) {
     `<h1>${title}</h1><pre>${body}</pre>`,
     '</main></body></html>'
   ].join('\n');
-  await saveExportHtml(documentUri, html);
+  await saveExportHtml(documentUri, html, projectRootFor(documentUri));
 }
 
 function resolveRelativeUri(markdownUri, relativePath) {
@@ -807,13 +1128,19 @@ async function ensureDirectory(uri) {
   }
 }
 
-async function ensureCacheDirectory(markdownUri) {
-  await ensureDirectory(cacheDirectoryUri(markdownUri));
-  await ensureParentGitignoreIgnoresCache(markdownUri);
+async function ensureCacheDirectory(markdownUri, projectRoot = projectRootFor(markdownUri)) {
+  await ensureDirectory(cacheDirectoryUri(markdownUri, projectRoot));
+  await ensureDirectoryGitignoreIgnoresCache(projectRoot);
 }
 
-async function ensureParentGitignoreIgnoresCache(markdownUri) {
-  const gitignoreUri = vscode.Uri.joinPath(markdownDirectoryUri(markdownUri), '.gitignore');
+async function ensureProjectCacheDirectory(markdownUri, projectRoot = projectRootFor(markdownUri)) {
+  const root = projectRoot;
+  await ensureDirectory(projectCacheDirectoryUri(markdownUri, root));
+  await ensureDirectoryGitignoreIgnoresCache(root);
+}
+
+async function ensureDirectoryGitignoreIgnoresCache(directoryUri) {
+  const gitignoreUri = vscode.Uri.joinPath(directoryUri, '.gitignore');
   let current = '';
   try {
     current = await readText(gitignoreUri);
