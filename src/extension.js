@@ -48,6 +48,7 @@ async function openStudio(context, uri, options) {
 
   const watcher = vscode.workspace.onDidChangeTextDocument((event) => {
     if (event.document.uri.toString() !== state.documentUri.toString()) return;
+    if (state.documentDeleted) return;
     const next = event.document.getText();
     if (next === state.markdown) return;
     const embedded = annotationsFromSource(next, state.documentKind);
@@ -131,6 +132,7 @@ async function loadDocumentState(context, documentUri, options = {}) {
     markdown,
     markdownHash: hashText(markdown),
     previewOnly: !!options.previewOnly,
+    documentDeleted: false,
     markdownFilesCache: Array.isArray(options.markdownFilesCache) ? options.markdownFilesCache : null,
     markdownFilesCacheRoot: options.markdownFilesCacheRoot || '',
     documentCache,
@@ -277,8 +279,19 @@ function watchMarkdownDirectory(panel, state) {
     }, 180);
   };
 
+  const scheduleActiveDeleted = (uri) => {
+    if (!uri || uri.toString() !== state.documentUri.toString()) return;
+    clearTimeout(activeReloadTimer);
+    activeReloadTimer = setTimeout(() => {
+      handleDocumentDeleted(panel, state).catch(showError);
+    }, 80);
+  };
+
   watcher.onDidCreate(scheduleRefresh);
-  watcher.onDidDelete(scheduleRefresh);
+  watcher.onDidDelete((uri) => {
+    scheduleRefresh();
+    scheduleActiveDeleted(uri);
+  });
   watcher.onDidChange((uri) => {
     scheduleRefresh();
     scheduleActiveReload(uri);
@@ -308,6 +321,32 @@ function relativePathForClipboard(currentUri, targetUri, projectRoot) {
   const base = projectRoot ? projectRoot.fsPath : (workspaceFolder ? workspaceFolder.uri.fsPath : path.dirname(currentUri.fsPath));
   const relative = path.relative(base, targetUri.fsPath) || path.basename(targetUri.fsPath);
   return relative.replace(/\\/g, '/');
+}
+
+function clipboardText(value) {
+  return String(value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+}
+
+function clipboardLabel(labels, key, fallback) {
+  return labels && typeof labels[key] === 'string' && labels[key].trim() ? labels[key].trim() : fallback;
+}
+
+function previewSelectionClipboardText(documentUri, projectRoot, message) {
+  const text = clipboardText(message.text);
+  if (!text) return '';
+  if (!message.withPath) return text;
+  const labels = message.labels && typeof message.labels === 'object' ? message.labels : {};
+  const relativePath = relativePathForClipboard(documentUri, documentUri, projectRoot);
+  const sectionTitle = clipboardText(message.sectionTitle);
+  const lineRange = clipboardText(message.lineRange);
+  return [
+    `${clipboardLabel(labels, 'path', 'Path')}: ${relativePath}`,
+    `${clipboardLabel(labels, 'section', 'Section')}: ${sectionTitle || '-'}`,
+    `${clipboardLabel(labels, 'line', 'Line')}: ${lineRange || '-'}`,
+    '',
+    `${clipboardLabel(labels, 'content', 'Content')}:`,
+    text
+  ].join('\n');
 }
 
 function comparableFsPath(value) {
@@ -419,6 +458,7 @@ function wirePanelMessages(context, panel, state) {
       }
       if (message.type === 'updateMarkdown') {
         if (message.uri !== state.documentUri.toString()) return;
+        if (state.documentDeleted) return;
         const nextMarkdown = String(message.markdown || '');
         if (nextMarkdown === state.markdown && !message.saveToDisk) return;
         const embedded = annotationsFromSource(nextMarkdown, state.documentKind);
@@ -445,11 +485,11 @@ function wirePanelMessages(context, panel, state) {
         const progress = sanitizeReadingProgress(message.readingProgress);
         const tableLayouts = sanitizeTableLayouts(message.tableLayouts);
         state.tableLayouts = tableLayouts;
-        if (progress || Object.keys(tableLayouts).length) {
+        if (!state.documentDeleted && (progress || Object.keys(tableLayouts).length)) {
           state.readingProgress = progress;
           await writeDocumentCache(state.documentUri, state, state.projectRoot);
         }
-        if (typeof message.markdown === 'string') {
+        if (!state.documentDeleted && typeof message.markdown === 'string') {
           const currentMarkdown = String(message.markdown);
           if (currentMarkdown !== state.markdown) {
             const embedded = annotationsFromSource(currentMarkdown, state.documentKind);
@@ -479,6 +519,7 @@ function wirePanelMessages(context, panel, state) {
         state.readingProgress = nextState.readingProgress;
         state.annotations = nextState.annotations;
         state.tableLayouts = nextState.tableLayouts;
+        state.documentDeleted = false;
         const mediaRoot = vscode.Uri.joinPath(context.extensionUri, 'media');
         applyPanelIdentity(panel, mediaRoot, state.documentUri);
         panel.webview.postMessage({
@@ -519,6 +560,17 @@ function wirePanelMessages(context, panel, state) {
           pathKind
         });
       }
+      if (message.type === 'copyPreviewSelection') {
+        if (message.uri !== state.documentUri.toString()) return;
+        const clipboardText = previewSelectionClipboardText(state.documentUri, state.projectRoot, message);
+        if (!clipboardText) return;
+        await vscode.env.clipboard.writeText(clipboardText);
+        panel.webview.postMessage({
+          type: 'previewSelectionCopied',
+          uri: state.documentUri.toString(),
+          withPath: !!message.withPath
+        });
+      }
       if (message.type === 'openLinkedMarkdown') {
         if (message.uri !== state.documentUri.toString()) return;
         const targetUri = await resolveLinkedMarkdownUri(state.documentUri, String(message.href || ''));
@@ -535,6 +587,7 @@ function wirePanelMessages(context, panel, state) {
       }
       if (message.type === 'saveImage') {
         if (message.uri !== state.documentUri.toString()) return;
+        if (state.documentDeleted) return;
         const saved = await savePastedImage(panel.webview, state.documentUri, message);
         panel.webview.postMessage({
           type: 'imageSaved',
@@ -575,6 +628,7 @@ function wirePanelMessages(context, panel, state) {
       }
       if (message.type === 'updateReadingProgress') {
         if (message.uri !== state.documentUri.toString()) return;
+        if (state.documentDeleted) return;
         const progress = sanitizeReadingProgress(message.progress);
         if (progress) {
           state.readingProgress = progress;
@@ -584,6 +638,7 @@ function wirePanelMessages(context, panel, state) {
       }
       if (message.type === 'updateAnnotations') {
         if (message.uri !== state.documentUri.toString()) return;
+        if (state.documentDeleted) return;
         const nextAnnotations = sanitizeAnnotations(message.annotations);
         const currentMarkdown = typeof message.markdown === 'string'
           ? String(message.markdown)
@@ -617,6 +672,7 @@ function wirePanelMessages(context, panel, state) {
       }
       if (message.type === 'updateTableLayouts') {
         if (message.uri !== state.documentUri.toString()) return;
+        if (state.documentDeleted) return;
         state.tableLayouts = sanitizeTableLayouts(message.tableLayouts);
         await writeDocumentCache(state.documentUri, state, state.projectRoot);
         await clearLegacyState(context, state.documentUri);
@@ -961,6 +1017,10 @@ async function currentMarkdownFor(uri) {
 }
 
 async function reloadMarkdownFromDisk(panel, state, options = {}) {
+  if (!(await fileExists(state.documentUri))) {
+    await handleDocumentDeleted(panel, state);
+    return;
+  }
   const currentMarkdown = await currentMarkdownFor(state.documentUri);
   const currentHash = hashText(currentMarkdown);
   if (currentHash === state.markdownHash && !options.force) return;
@@ -983,7 +1043,27 @@ async function reloadMarkdownFromDisk(panel, state, options = {}) {
   });
 }
 
+async function handleDocumentDeleted(panel, state) {
+  if (state.documentDeleted) return;
+  state.documentDeleted = true;
+  state.markdownHash = '';
+  panel.webview.postMessage({
+    type: 'documentDeleted',
+    uri: state.documentUri.toString(),
+    fileName: path.basename(state.documentUri.fsPath),
+    markdownFiles: await markdownFilesForState(state, { force: true })
+  });
+}
+
 async function canWriteMarkdown(panel, state, message, nextMarkdown) {
+  if (state.documentDeleted || !(await fileExists(state.documentUri))) {
+    await handleDocumentDeleted(panel, state);
+    panel.webview.postMessage({
+      type: 'error',
+      message: 'The Markdown file was deleted from disk. read-md-as-html will not recreate it automatically.'
+    });
+    return false;
+  }
   const currentMarkdown = await currentMarkdownFor(state.documentUri);
   const currentHash = hashText(currentMarkdown);
   const baseHash = String(message.baseMarkdownHash || state.markdownHash || '');

@@ -11,6 +11,7 @@
     committedMarkdown: initial.markdown || '',
     markdownHash: initial.markdownHash || '',
     previewOnly: !!initial.previewOnly,
+    documentDeleted: false,
     autoSave: initial.autoSave !== false,
     previewEditEnabled: !!initial.previewEditEnabled,
     theme: persistedState.theme || initial.theme || 'reader-light',
@@ -38,14 +39,18 @@
     pendingMarkdownSaves: new Map(),
     patchTimer: null,
     hoverTimer: null,
+    previewScrollRaf: 0,
     noteMarginRaf: 0,
     noteMarginTimer: null,
     lastNoteMarginRender: 0,
     bookmarkMarkersRaf: 0,
     railPreviewRaf: 0,
     sourceAxisRaf: 0,
+    sourceAxisVisibleRaf: 0,
     sourceAxisTimer: null,
     sourceAxisActiveRaf: 0,
+    sourceAxisItems: [],
+    sourceAxisVisibleRange: '',
     sourceAxisMarkers: new Map(),
     activeSourceAxisMarker: null,
     activeSourceAxisIndex: '',
@@ -74,6 +79,8 @@
     markdownFilesSignature: '',
     annotations: Array.isArray(initial.annotations) ? initial.annotations : [],
     pendingAnnotationSelection: null,
+    previewContextSelection: null,
+    lastPreviewCopyDetails: null,
     readingHistoryApplying: false,
     previewScrollIntent: false,
     lightboxObjectUrl: null
@@ -216,6 +223,9 @@
       operationFailed: 'Operation failed',
       externalChangeReloaded: 'Reloaded the latest Markdown from disk.',
       externalChangePending: 'External Markdown change detected; local webview edits are still pending.',
+      documentDeleted: 'This document was deleted from disk. Pick another file from the project tree to continue.',
+      documentDeletedTitle: 'Document deleted',
+      documentDeletedBody: 'The Markdown file for this reader no longer exists on disk. The current preview is kept read-only so you can copy text or switch to another file from the project tree.',
       imageSaveFailed: 'Image save failed',
       mermaidError: 'Mermaid render error',
       mathError: 'Formula render error',
@@ -227,7 +237,15 @@
       openSource: 'Open source',
       copyAbsolutePath: 'Copy absolute path',
       copyRelativePath: 'Copy relative path',
+      copySelection: 'Copy',
+      copyWithPath: 'Copy with path',
+      copyPathLabel: 'Path',
+      copySectionLabel: 'Section',
+      copyLineLabel: 'Line',
+      copyContentLabel: 'Content',
       pathCopied: 'Path copied',
+      selectionCopied: 'Copied',
+      noCopySelection: 'Select preview text to copy',
       pinnedSection: 'Pinned',
       tableFilter: 'Filter column',
       tableFilterSearch: 'Search values',
@@ -343,6 +361,9 @@
       operationFailed: '操作失败',
       externalChangeReloaded: '\u5df2\u4ece\u78c1\u76d8\u5237\u65b0\u6700\u65b0 Markdown\u3002',
       externalChangePending: '\u68c0\u6d4b\u5230\u5916\u90e8 Markdown \u53d8\u5316\uff1bwebview \u91cc\u8fd8\u6709\u672a\u4fdd\u5b58\u7f16\u8f91\u3002',
+      documentDeleted: '当前文档已从磁盘删除。请从项目文件树切换到其他文档。',
+      documentDeletedTitle: '文档已删除',
+      documentDeletedBody: '这个阅读器对应的 Markdown 文件已经不在磁盘上。当前预览会保留为只读状态，方便复制内容或从项目文件树切换到其他文档。',
       imageSaveFailed: '图片保存失败',
       mermaidError: 'Mermaid 渲染有错误',
       mathError: '公式渲染有错误',
@@ -354,7 +375,15 @@
       openSource: '打开来源',
       copyAbsolutePath: '复制绝对路径',
       copyRelativePath: '复制相对路径',
+      copySelection: '复制',
+      copyWithPath: '带路径复制',
+      copyPathLabel: '路径',
+      copySectionLabel: '章节',
+      copyLineLabel: '行',
+      copyContentLabel: '内容',
       pathCopied: '路径已复制',
+      selectionCopied: '已复制',
+      noCopySelection: '请先选中 HTML 预览里的文字',
       pinnedSection: '已置顶',
       tableFilter: '筛选这一列',
       tableFilterSearch: '搜索值',
@@ -496,6 +525,33 @@
     els.previewStatus.textContent = state.previewEditEnabled ? t('previewEditable') : t('liveRender');
   }
 
+  function applyDocumentAvailability() {
+    const deleted = !!state.documentDeleted;
+    document.body.classList.toggle('document-deleted', deleted);
+    if (els.editor) els.editor.disabled = state.previewOnly || deleted;
+    if (els.saveDocument) els.saveDocument.disabled = deleted;
+    if (els.togglePreviewEdit) els.togglePreviewEdit.disabled = deleted;
+    renderDeletedDocumentBanner();
+    if (deleted) setStatus(t('documentDeleted'));
+  }
+
+  function renderDeletedDocumentBanner() {
+    if (!els.preview) return;
+    const existing = els.preview.querySelector('.document-deleted-banner');
+    if (!state.documentDeleted) {
+      if (existing) existing.remove();
+      return;
+    }
+    const banner = existing || document.createElement('aside');
+    banner.className = 'document-deleted-banner';
+    banner.setAttribute('role', 'status');
+    banner.innerHTML = [
+      '<div class="document-deleted-title">' + escapeHtml(t('documentDeletedTitle')) + '</div>',
+      '<div class="document-deleted-body">' + escapeHtml(t('documentDeletedBody')) + '</div>'
+    ].join('');
+    if (!existing) els.preview.insertBefore(banner, els.preview.firstChild);
+  }
+
   function updateRenderStats() {
     els.renderStats.textContent = state.blocks.length + ' ' + t('blocks');
   }
@@ -574,6 +630,7 @@
     updateSourceStatus();
     updateRenderStats();
     updatePreviewModeStatus();
+    applyDocumentAvailability();
     renderMarkdownFiles();
     if (state.blocks.length) state.sectionPreviews = collectSectionPreviews(state.blocks);
     renderOutlines();
@@ -970,13 +1027,38 @@
     return state.documentKind === 'latex' ? collectLatexReferences(source) : collectReferences(source);
   }
 
+  function markdownMathFenceStart(trimmed) {
+    if (trimmed.startsWith('$$')) return '$$';
+    if (trimmed.startsWith('\\[')) return '\\]';
+    return '';
+  }
+
+  function markdownMathFenceCloses(trimmed, fence) {
+    if (fence === '$$') return /\$\$\s*$/.test(trimmed);
+    if (fence === '\\]') return /\\\]\s*$/.test(trimmed);
+    return false;
+  }
+
+  function markdownMathFenceOpenerOnly(trimmed, fence) {
+    if (fence === '$$') return trimmed === '$$';
+    if (fence === '\\]') return trimmed === '\\[';
+    return false;
+  }
+
+  function isMarkdownMathBlock(raw) {
+    const trimmed = String(raw || '').trim();
+    if (trimmed === '$$' || trimmed.startsWith('$$\n') || (/^\$\$[\s\S]*\$\$$/.test(trimmed) && trimmed.length > 4)) return true;
+    if (trimmed === '\\[' || trimmed.startsWith('\\[\n') || (/^\\\[[\s\S]*\\\]$/.test(trimmed) && trimmed.length > 4)) return true;
+    return false;
+  }
+
   function classifyBlock(raw) {
     const trimmed = raw.trim();
     if (/^---\n[\s\S]*\n---$/.test(trimmed)) return 'frontmatter';
     if (/^#{1,6}\s+/.test(trimmed)) return 'heading';
     if (/^\[R\d+\]\s+/.test(trimmed)) return 'reference';
     if (/^```/.test(trimmed)) return 'code';
-    if (trimmed === '$$' || trimmed.startsWith('$$\n')) return 'math';
+    if (isMarkdownMathBlock(trimmed)) return 'math';
     if (/^>\s?/.test(trimmed)) return 'blockquote';
     if (/^\s*(?:[-*+]\s+|\d+\.\s+)/m.test(raw)) return 'list';
     if (raw.includes('|') && /\n\s*\|?\s*:?-{3,}:?/.test(raw)) return 'table';
@@ -989,7 +1071,7 @@
     let start = null;
     let buffer = [];
     let inFence = false;
-    let inMath = false;
+    let mathFence = '';
     let firstContentLine = lines.findIndex(line => line.trim());
     let loopStart = 0;
 
@@ -1030,6 +1112,10 @@
       const trimmed = line.trim();
       if (start === null && trimmed) start = i;
       if (start === null) continue;
+      if (!inFence && !mathFence && buffer.length && markdownMathFenceStart(trimmed)) {
+        flush(i - 1);
+        start = i;
+      }
       buffer.push(line);
 
       if (trimmed.startsWith('```')) {
@@ -1041,16 +1127,23 @@
         }
         continue;
       }
-      if (trimmed === '$$') {
-        if (inMath) {
-          inMath = false;
+      if (mathFence) {
+        if (markdownMathFenceCloses(trimmed, mathFence)) {
+          mathFence = '';
           flush(i);
-        } else {
-          inMath = true;
         }
         continue;
       }
-      if (inFence || inMath) continue;
+      const nextMathFence = markdownMathFenceStart(trimmed);
+      if (!inFence && nextMathFence) {
+        if (markdownMathFenceCloses(trimmed, nextMathFence) && !markdownMathFenceOpenerOnly(trimmed, nextMathFence)) {
+          flush(i);
+        } else {
+          mathFence = nextMathFence;
+        }
+        continue;
+      }
+      if (inFence || mathFence) continue;
       if (!lines[i + 1] || !lines[i + 1].trim()) flush(i);
     }
     flush(lines.length - 1);
@@ -1273,6 +1366,143 @@
     return sections;
   }
 
+  function mathBlockHtml(raw) {
+    const source = String(raw || '');
+    return '<div class="math-block" data-latex="' + escapeHtml(source) + '">' + escapeHtml(source) + '</div>';
+  }
+
+  function mathSpanHtml(raw) {
+    const source = String(raw || '');
+    return '<span class="inline-math-source" data-latex="' + escapeHtml(source) + '">' + escapeHtml(source) + '</span>';
+  }
+
+  function nextUnescaped(text, needle, from) {
+    let index = Math.max(0, from);
+    while (index < text.length) {
+      const found = text.indexOf(needle, index);
+      if (found < 0) return -1;
+      let slashCount = 0;
+      for (let pos = found - 1; pos >= 0 && text[pos] === '\\'; pos -= 1) slashCount += 1;
+      if (slashCount % 2 === 0) return found;
+      index = found + needle.length;
+    }
+    return -1;
+  }
+
+  function inlineMathRanges(text) {
+    const source = String(text || '');
+    const ranges = [];
+    let index = 0;
+    while (index < source.length) {
+      let open = '';
+      let close = '';
+      if (source.startsWith('\\(', index)) {
+        open = '\\(';
+        close = '\\)';
+      } else if (source.startsWith('\\[', index)) {
+        open = '\\[';
+        close = '\\]';
+      } else if (source.startsWith('$$', index)) {
+        open = '$$';
+        close = '$$';
+      } else if (source[index] === '$' && source[index + 1] !== '$') {
+        open = '$';
+        close = '$';
+      }
+      if (!open) {
+        index += 1;
+        continue;
+      }
+      const end = nextUnescaped(source, close, index + open.length);
+      if (end < 0) {
+        index += open.length;
+        continue;
+      }
+      const raw = source.slice(index, end + close.length);
+      if (raw.length > open.length + close.length) {
+        ranges.push({ start: index, end: end + close.length, raw });
+      }
+      index = end + close.length;
+    }
+    return ranges;
+  }
+
+  function replaceInlineMathDelimiters(value) {
+    const text = String(value || '');
+    const ranges = inlineMathRanges(text);
+    if (!ranges.length) return text;
+    const parts = [];
+    let offset = 0;
+    for (const range of ranges) {
+      if (range.start > offset) parts.push(text.slice(offset, range.start));
+      parts.push(mathSpanHtml(range.raw));
+      offset = range.end;
+    }
+    if (offset < text.length) parts.push(text.slice(offset));
+    return parts.join('');
+  }
+
+  function protectInlineMathForMarked(raw) {
+    const source = String(raw || '');
+    let output = '';
+    let index = 0;
+    while (index < source.length) {
+      if (source[index] === '`') {
+        const match = /^`+/.exec(source.slice(index));
+        const fence = match ? match[0] : '`';
+        const close = source.indexOf(fence, index + fence.length);
+        if (close >= 0) {
+          output += source.slice(index, close + fence.length);
+          index = close + fence.length;
+          continue;
+        }
+        output += fence;
+        index += fence.length;
+        continue;
+      }
+      const nextCode = source.indexOf('`', index);
+      const end = nextCode >= 0 ? nextCode : source.length;
+      output += replaceInlineMathDelimiters(source.slice(index, end));
+      index = end;
+    }
+    return output;
+  }
+
+  function annotateInlineMathHtml(html) {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const textNodes = [];
+    const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!node.nodeValue || !/[\\$]/.test(node.nodeValue)) return NodeFilter.FILTER_REJECT;
+        const parent = node.parentElement;
+        if (!parent || parent.closest('code, pre, script, style, textarea, .mermaid, .math-block, [data-latex]')) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    while (walker.nextNode()) textNodes.push(walker.currentNode);
+    for (const node of textNodes) {
+      const ranges = inlineMathRanges(node.nodeValue);
+      if (!ranges.length) continue;
+      const fragment = document.createDocumentFragment();
+      let offset = 0;
+      for (const range of ranges) {
+        if (range.start > offset) fragment.appendChild(document.createTextNode(node.nodeValue.slice(offset, range.start)));
+        const span = document.createElement('span');
+        span.className = 'inline-math-source';
+        span.dataset.latex = range.raw;
+        span.textContent = range.raw;
+        fragment.appendChild(span);
+        offset = range.end;
+      }
+      if (offset < node.nodeValue.length) fragment.appendChild(document.createTextNode(node.nodeValue.slice(offset)));
+      node.parentNode.replaceChild(fragment, node);
+    }
+    return template.innerHTML;
+  }
+
   function renderInlineMarkdown(value) {
     let text = escapeHtml(value);
     text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
@@ -1280,7 +1510,7 @@
     text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
     text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     text = text.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
-    return text;
+    return annotateInlineMathHtml(text);
   }
 
   function simpleMarkdownFragment(raw, type) {
@@ -1300,7 +1530,7 @@
       return '<pre><code>' + escapeHtml(code) + '</code></pre>';
     }
     if (type === 'math') {
-      return '<div class="math-block">' + escapeHtml(raw) + '</div>';
+      return mathBlockHtml(raw);
     }
     if (type === 'blockquote') {
       return '<blockquote><p>' + raw.split('\n').map(line => renderInlineMarkdown(line.replace(/^>\s?/, ''))).join('<br>') + '</p></blockquote>';
@@ -1347,15 +1577,16 @@
 
   function renderMarkdownFragment(raw, type) {
     if (type === 'frontmatter') return renderFrontMatter(raw);
-    if (type === 'math') return '<div class="math-block">' + escapeHtml(raw) + '</div>';
+    if (type === 'math') return mathBlockHtml(raw);
     if (window.marked) {
-      let html = window.marked.parse(raw);
+      let html = window.marked.parse(protectInlineMathForMarked(raw));
       html = html.replace(/<pre><code class="language-mermaid">([\s\S]*?)<\/code><\/pre>/g, function (_, code) {
         const textarea = document.createElement('textarea');
         textarea.innerHTML = code;
         return '<div class="mermaid">' + escapeHtml(textarea.value) + '</div>';
       });
-      return window.DOMPurify ? window.DOMPurify.sanitize(html, { ADD_ATTR: ['target'] }) : html;
+      html = annotateInlineMathHtml(html);
+      return window.DOMPurify ? window.DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'data-latex'] }) : html;
     }
     return simpleMarkdownFragment(raw, type);
   }
@@ -1387,7 +1618,7 @@
     text = text.replace(/\\label\{([^}]+)\}/g, '');
     text = text.replace(/\\[A-Za-z@]+\*?(?:\[[^\]]*\])?\{([^{}]*)\}/g, '$1');
     text = text.replace(/\\\\/g, '<br>');
-    return text.trim();
+    return annotateInlineMathHtml(text.trim());
   }
 
   function latexMathContent(raw) {
@@ -1463,7 +1694,7 @@
       const level = info ? Math.min(6, Math.max(1, info.level)) : 2;
       return '<h' + level + '>' + renderInlineLatex(info ? info.title : stripLatex(raw)) + '</h' + level + '>';
     }
-    if (type === 'math') return '<div class="math-block">\\[' + escapeHtml(latexMathContent(raw)) + '\\]</div>';
+    if (type === 'math') return mathBlockHtml(raw);
     if (type === 'figure') return renderLatexFigure(raw);
     if (type === 'list') return renderLatexList(raw, /^\\begin\{enumerate\}/.test(raw.trim()));
     if (type === 'abstract') {
@@ -1631,7 +1862,7 @@
   function blockElementAtScrollTop(top, offset = 24) {
     const blocks = state.blockElements;
     if (!blocks.length) return null;
-    const targetTop = normalizedPreviewScrollTop(top) + offset;
+    const targetTop = Math.max(0, Math.round(Number(top) || 0)) + offset;
     const blockTops = state.blockTops;
     if (blockTops && blockTops.length === blocks.length) {
       let low = 0;
@@ -1688,6 +1919,7 @@
     }
     applyAnnotations();
     if (state.searchQuery) refreshSearch({ preserveIndex: true, skipScroll: true });
+    renderDeletedDocumentBanner();
     scheduleSourceAxisRender(180);
     scheduleBookmarkMarkersUpdate();
     renderNotesPanel();
@@ -2456,6 +2688,8 @@
     const enabled = state.blocks.length > 0 && state.blockElements.length > 0;
     els.previewScroller.classList.toggle('has-source-axis', enabled);
     els.sourceAxis.innerHTML = '';
+    state.sourceAxisItems = [];
+    state.sourceAxisVisibleRange = '';
     if (!enabled) {
       els.sourceAxis.style.height = '0px';
       state.sourceAxisMarkers = new Map();
@@ -2467,7 +2701,12 @@
     refreshPreviewBlockMetrics();
     const fragment = document.createDocumentFragment();
     const markers = new Map();
-    els.sourceAxis.style.height = Math.max(els.previewScroller.scrollHeight, els.preview.offsetHeight) + 'px';
+    let blockBottom = 0;
+    for (let index = 0; index < state.blockTops.length; index += 1) {
+      blockBottom = Math.max(blockBottom, state.blockTops[index] + (state.blockHeights[index] || 0));
+    }
+    const axisHeight = Math.max(els.preview.offsetHeight || 0, blockBottom + 24);
+    els.sourceAxis.style.height = axisHeight + 'px';
 
     state.blockElements.forEach((element, elementIndex) => {
       const blockIndex = Number(element.dataset.blockIndex);
@@ -2478,33 +2717,91 @@
       const kind = axisBlockKind(block, element);
       const lines = sourceLineRangeLabel(block);
       const summary = axisBlockSummary(block, element);
-      const marker = document.createElement('button');
-      marker.type = 'button';
-      marker.className = 'source-axis-marker source-axis-' + axisBlockClass(block, element);
-      marker.dataset.blockIndex = String(block.index);
-      marker.dataset.sourceStart = String(block.start);
-      marker.style.top = top + 'px';
-      marker.style.minHeight = Math.min(92, Math.max(22, height)) + 'px';
-      marker.title = [kind + ' · ' + t('sourceLineRange', { lines }), summary].filter(Boolean).join('\n');
-      marker.innerHTML = [
-        '<span class="source-axis-tick" aria-hidden="true"></span>',
-        '<span class="source-axis-text">',
-        '<span class="source-axis-lines">L' + escapeHtml(lines) + '</span>',
-        '<span class="source-axis-kind">' + escapeHtml(kind) + '</span>',
-        '</span>'
-      ].join('');
-      marker.addEventListener('click', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        revealSourceLine(block.start);
+      state.sourceAxisItems.push({
+        blockIndex: block.index,
+        sourceStart: block.start,
+        top,
+        height,
+        bottom: top + height,
+        kind,
+        lines,
+        summary,
+        className: 'source-axis-marker source-axis-' + axisBlockClass(block, element)
       });
-      markers.set(String(block.index), marker);
-      fragment.appendChild(marker);
+      return;
+      marker.title = [kind + ' · ' + t('sourceLineRange', { lines }), summary].filter(Boolean).join('\n');
     });
     els.sourceAxis.appendChild(fragment);
     state.sourceAxisMarkers = markers;
     state.activeSourceAxisMarker = null;
     state.activeSourceAxisIndex = '';
+    renderVisibleSourceAxisMarkers(true);
+    updateSourceAxisActive();
+  }
+
+  function sourceAxisVisibleRange() {
+    const items = state.sourceAxisItems || [];
+    if (!items.length || !els.previewScroller) return null;
+    const viewport = els.previewScroller.clientHeight || 700;
+    const buffer = Math.max(520, Math.round(viewport * 1.25));
+    const visibleTop = Math.max(0, els.previewScroller.scrollTop - buffer);
+    const visibleBottom = els.previewScroller.scrollTop + viewport + buffer;
+    let low = 0;
+    let high = items.length - 1;
+    let start = items.length;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (items[mid].bottom >= visibleTop) {
+        start = mid;
+        high = mid - 1;
+      } else {
+        low = mid + 1;
+      }
+    }
+    let end = start;
+    while (end < items.length && items[end].top <= visibleBottom) end += 1;
+    if (start >= items.length || end <= start) return { start: 0, end: 0 };
+    return { start, end };
+  }
+
+  function renderVisibleSourceAxisMarkers(force = false) {
+    if (!els.sourceAxis) return;
+    const range = sourceAxisVisibleRange();
+    if (!range) return;
+    const signature = range.start + ':' + range.end;
+    if (!force && state.sourceAxisVisibleRange === signature) return;
+    state.sourceAxisVisibleRange = signature;
+    els.sourceAxis.innerHTML = '';
+    state.sourceAxisMarkers = new Map();
+    state.activeSourceAxisMarker = null;
+    state.activeSourceAxisIndex = '';
+    const fragment = document.createDocumentFragment();
+    const visibleItems = (state.sourceAxisItems || []).slice(range.start, range.end);
+    for (const item of visibleItems) {
+      const marker = document.createElement('button');
+      marker.type = 'button';
+      marker.className = item.className;
+      marker.dataset.blockIndex = String(item.blockIndex);
+      marker.dataset.sourceStart = String(item.sourceStart);
+      marker.style.top = item.top + 'px';
+      marker.style.minHeight = Math.min(92, Math.max(22, item.height)) + 'px';
+      marker.title = [item.kind + ' - ' + t('sourceLineRange', { lines: item.lines }), item.summary].filter(Boolean).join('\n');
+      marker.innerHTML = [
+        '<span class="source-axis-tick" aria-hidden="true"></span>',
+        '<span class="source-axis-text">',
+        '<span class="source-axis-lines">L' + escapeHtml(item.lines) + '</span>',
+        '<span class="source-axis-kind">' + escapeHtml(item.kind) + '</span>',
+        '</span>'
+      ].join('');
+      marker.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        revealSourceLine(item.sourceStart);
+      });
+      state.sourceAxisMarkers.set(String(item.blockIndex), marker);
+      fragment.appendChild(marker);
+    }
+    els.sourceAxis.appendChild(fragment);
     updateSourceAxisActive();
   }
 
@@ -2544,11 +2841,21 @@
     });
   }
 
+  function scheduleSourceAxisVisibleUpdate() {
+    if (!state.sourceAxisItems || !state.sourceAxisItems.length) return;
+    if (state.sourceAxisVisibleRaf) return;
+    state.sourceAxisVisibleRaf = window.requestAnimationFrame(() => {
+      state.sourceAxisVisibleRaf = 0;
+      renderVisibleSourceAxisMarkers();
+    });
+  }
+
   function hideFileContextMenu() {
     if (!els.fileContextMenu) return;
     els.fileContextMenu.classList.remove('visible');
     els.fileContextMenu.setAttribute('aria-hidden', 'true');
     els.fileContextMenu.innerHTML = '';
+    state.previewContextSelection = null;
   }
 
   function copyFilePath(file, pathKind) {
@@ -2570,6 +2877,7 @@
     event.preventDefault();
     event.stopPropagation();
     hideHovercardNow();
+    state.previewContextSelection = null;
     els.fileContextMenu.innerHTML = '';
     const actions = [
       { kind: 'absolute', label: t('copyAbsolutePath') },
@@ -2591,6 +2899,261 @@
     const top = Math.min(window.innerHeight - rect.height - 8, Math.max(8, event.clientY));
     els.fileContextMenu.style.left = left + 'px';
     els.fileContextMenu.style.top = top + 'px';
+  }
+
+  function rangeIntersectsNode(range, node) {
+    try {
+      return !!(range && node && range.intersectsNode(node));
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function previewSelectionRanges() {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || !selection.rangeCount || !els.preview) return [];
+    const ranges = [];
+    for (let index = 0; index < selection.rangeCount; index += 1) {
+      const range = selection.getRangeAt(index);
+      if (!range || range.collapsed || !rangeIntersectsNode(range, els.preview)) continue;
+      ranges.push(range);
+    }
+    return ranges;
+  }
+
+  function closestLatexSource(node) {
+    const element = node && node.nodeType === Node.ELEMENT_NODE ? node : (node ? node.parentElement : null);
+    return element ? element.closest('[data-latex]') : null;
+  }
+
+  function cleanCopiedLatex(value) {
+    return String(value || '').replace(/\u00a0/g, ' ').trim();
+  }
+
+  function directLatexSelection(range) {
+    const startMath = closestLatexSource(range.startContainer);
+    const endMath = closestLatexSource(range.endContainer);
+    if (startMath && startMath === endMath) return cleanCopiedLatex(startMath.dataset.latex || '');
+    return '';
+  }
+
+  function copyNodeChildrenText(node) {
+    return Array.from(node.childNodes || []).map(child => copyNodeText(child)).join('');
+  }
+
+  function copyNodeText(node) {
+    if (!node) return '';
+    if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || '';
+    if (node.nodeType === Node.DOCUMENT_FRAGMENT_NODE) return copyNodeChildrenText(node);
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+    const element = node;
+    if (element.matches('script, style, textarea, .selection-toolbar, .file-context-menu, .hovercard')) return '';
+    const latex = element.getAttribute('data-latex');
+    if (latex) return cleanCopiedLatex(latex);
+    const tag = element.tagName;
+    if (tag === 'BR') return '\n';
+    if (tag === 'IMG') return element.alt ? '[image: ' + element.alt + ']' : '';
+    if (tag === 'MJX-CONTAINER' && element.closest('[data-latex]')) return '';
+    if (tag === 'TR') {
+      return Array.from(element.children)
+        .filter(child => child.tagName === 'TD' || child.tagName === 'TH')
+        .map(child => normalizeCopiedText(copyNodeChildrenText(child), { trim: true }))
+        .join('\t') + '\n';
+    }
+    if (tag === 'TABLE' || tag === 'THEAD' || tag === 'TBODY') return copyNodeChildrenText(element) + '\n';
+    if (tag === 'LI') return '- ' + normalizeCopiedText(copyNodeChildrenText(element), { trim: true }) + '\n';
+    const text = copyNodeChildrenText(element);
+    if (/^(P|DIV|SECTION|ARTICLE|BLOCKQUOTE|FIGURE|FIGCAPTION|H[1-6]|PRE|UL|OL)$/.test(tag)) {
+      return text + '\n\n';
+    }
+    return text;
+  }
+
+  function normalizeCopiedText(value, options = {}) {
+    const text = String(value || '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n[ \t]+/g, '\n')
+      .replace(/\n{3,}/g, '\n\n');
+    return options.trim === false ? text : text.trim();
+  }
+
+  function rangeTextWithLatex(range) {
+    const directLatex = directLatexSelection(range);
+    if (directLatex) return directLatex;
+    const container = document.createElement('div');
+    container.appendChild(range.cloneContents());
+    return normalizeCopiedText(copyNodeChildrenText(container));
+  }
+
+  function selectedBlocksForRanges(ranges) {
+    const blocks = [];
+    const seen = new Set();
+    for (const block of state.blockElements || []) {
+      for (const range of ranges) {
+        if (!rangeIntersectsNode(range, block)) continue;
+        const index = block.dataset.blockIndex || '';
+        if (!seen.has(index)) {
+          seen.add(index);
+          blocks.push(block);
+        }
+        break;
+      }
+    }
+    return blocks;
+  }
+
+  function copyMetadataForBlock(firstBlock, lastBlock) {
+    const firstSource = firstBlock ? Number(firstBlock.dataset.sourceStart) : -1;
+    const lastSource = lastBlock ? Number(lastBlock.dataset.sourceEnd || lastBlock.dataset.sourceStart) : firstSource;
+    const lineStart = Number.isFinite(firstSource) && firstSource >= 0 ? firstSource + 1 : 0;
+    const lineEnd = Number.isFinite(lastSource) && lastSource >= 0 ? lastSource + 1 : lineStart;
+    const blockIndex = firstBlock ? Number(firstBlock.dataset.blockIndex) : -1;
+    const section = annotationSectionInfo({ blockIndex, sourceStart: firstSource });
+    return {
+      sectionTitle: section ? section.title : '',
+      lineRange: lineStart > 0 ? (lineEnd > lineStart ? lineStart + '-' + lineEnd : String(lineStart)) : ''
+    };
+  }
+
+  function previewCopyDetails() {
+    const ranges = previewSelectionRanges();
+    if (!ranges.length) return null;
+    const text = normalizeCopiedText(ranges.map(rangeTextWithLatex).filter(Boolean).join('\n'));
+    if (!text) return null;
+    const selectedBlocks = selectedBlocksForRanges(ranges);
+    const firstBlock = selectedBlocks[0] || visiblePreviewBlock();
+    const lastBlock = selectedBlocks[selectedBlocks.length - 1] || firstBlock;
+    return Object.assign({ text }, copyMetadataForBlock(firstBlock, lastBlock));
+  }
+
+  function rememberPreviewCopyDetails(details) {
+    if (!details || !details.text) return null;
+    state.lastPreviewCopyDetails = Object.assign({}, details, { capturedAt: Date.now() });
+    return state.lastPreviewCopyDetails;
+  }
+
+  function recentPreviewCopyDetails() {
+    const details = state.lastPreviewCopyDetails;
+    if (!details || !details.text) return null;
+    if (Date.now() - Number(details.capturedAt || 0) > 30000) return null;
+    return details;
+  }
+
+  function previewCopyDetailsFromTarget(target) {
+    const element = target && target.nodeType === Node.ELEMENT_NODE ? target : (target ? target.parentElement : null);
+    const math = element ? element.closest('[data-latex]') : null;
+    if (!math || !els.preview.contains(math)) return null;
+    const text = cleanCopiedLatex(math.dataset.latex || '');
+    if (!text) return null;
+    const block = math.closest('.md-block');
+    return Object.assign({ text }, copyMetadataForBlock(block, block));
+  }
+
+  function previewCopyDetailsFromBlockTarget(target) {
+    const element = target && target.nodeType === Node.ELEMENT_NODE ? target : (target ? target.parentElement : null);
+    const block = element ? element.closest('.md-block') : null;
+    if (!block || !els.preview.contains(block)) return null;
+    const text = normalizeCopiedText(copyNodeText(block));
+    if (!text) return null;
+    return Object.assign({ text }, copyMetadataForBlock(block, block));
+  }
+
+  function previewCopyDetailsForContextTarget(target) {
+    return rememberPreviewCopyDetails(previewCopyDetails()) ||
+      previewCopyDetailsFromTarget(target) ||
+      recentPreviewCopyDetails() ||
+      previewCopyDetailsFromBlockTarget(target);
+  }
+
+  function activeMarkdownRelativePath() {
+    const files = Array.isArray(state.markdownFiles) ? state.markdownFiles : [];
+    const active = files.find(file => file && file.uri === state.uri) || files.find(file => file && file.active);
+    return String(active && (active.relativePath || active.name) || state.fileName || 'document.md').replace(/\\/g, '/');
+  }
+
+  function previewClipboardText(copyDetails, withPath) {
+    if (!withPath) return copyDetails.text;
+    return [
+      t('copyPathLabel') + ': ' + activeMarkdownRelativePath(),
+      t('copySectionLabel') + ': ' + (copyDetails.sectionTitle || '-'),
+      t('copyLineLabel') + ': ' + (copyDetails.lineRange || '-'),
+      '',
+      t('copyContentLabel') + ':',
+      copyDetails.text
+    ].join('\n');
+  }
+
+  function copyPreviewSelection(withPath = false, details = null) {
+    const copyDetails = details || state.previewContextSelection || rememberPreviewCopyDetails(previewCopyDetails());
+    if (!copyDetails || !copyDetails.text) {
+      setStatus(t('noCopySelection'));
+      hideFileContextMenu();
+      return;
+    }
+    const message = {
+      type: 'copyPreviewSelection',
+      uri: state.uri,
+      text: copyDetails.text,
+      sectionTitle: copyDetails.sectionTitle || '',
+      lineRange: copyDetails.lineRange || '',
+      withPath: !!withPath,
+      labels: {
+        path: t('copyPathLabel'),
+        section: t('copySectionLabel'),
+        line: t('copyLineLabel'),
+        content: t('copyContentLabel')
+      }
+    };
+    const text = previewClipboardText(copyDetails, withPath);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text)
+        .then(() => setStatus(t('selectionCopied')))
+        .catch(() => post(message));
+    } else {
+      post(message);
+    }
+    hideFileContextMenu();
+  }
+
+  function addContextMenuButton(label, disabled, onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'file-context-menu-item';
+    button.setAttribute('role', 'menuitem');
+    button.textContent = label;
+    button.disabled = !!disabled;
+    if (!disabled) button.addEventListener('click', onClick);
+    els.fileContextMenu.appendChild(button);
+  }
+
+  function showPreviewContextMenu(event) {
+    if (!els.fileContextMenu || !els.preview || !els.preview.contains(event.target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    hideHovercardNow();
+    state.previewContextSelection = previewCopyDetailsForContextTarget(event.target);
+    hideSelectionToolbar();
+    const disabled = !state.previewContextSelection;
+    els.fileContextMenu.innerHTML = '';
+    addContextMenuButton(t('copySelection'), disabled, () => copyPreviewSelection(false));
+    addContextMenuButton(t('copyWithPath'), disabled, () => copyPreviewSelection(true));
+    els.fileContextMenu.classList.add('visible');
+    els.fileContextMenu.setAttribute('aria-hidden', 'false');
+    const rect = els.fileContextMenu.getBoundingClientRect();
+    const left = Math.min(window.innerWidth - rect.width - 8, Math.max(8, event.clientX));
+    const top = Math.min(window.innerHeight - rect.height - 8, Math.max(8, event.clientY));
+    els.fileContextMenu.style.left = left + 'px';
+    els.fileContextMenu.style.top = top + 'px';
+  }
+
+  function handlePreviewCopy(event) {
+    if (event.defaultPrevented) return;
+    const details = rememberPreviewCopyDetails(previewCopyDetails());
+    if (!details || !details.text || !event.clipboardData) return;
+    event.preventDefault();
+    event.clipboardData.setData('text/plain', details.text);
+    setStatus(t('selectionCopied'));
   }
 
   function renderMarkdownFiles() {
@@ -3377,8 +3940,12 @@
       if (selectionInfo && event && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
         selectionInfo.point = { x: event.clientX, y: event.clientY };
       }
-      if (selectionInfo) showSelectionToolbar(selectionInfo);
-      else hideSelectionToolbar();
+      if (selectionInfo) {
+        rememberPreviewCopyDetails(previewCopyDetails());
+        showSelectionToolbar(selectionInfo);
+      } else {
+        hideSelectionToolbar();
+      }
     }, 0);
   }
 
@@ -3544,7 +4111,14 @@
     return els.preview.querySelector('[data-annotation-id="' + CSS.escape(annotation.id) + '"]') || annotationBlockElement(annotation);
   }
 
-  function annotationTargetTop(annotation) {
+  function annotationTargetTop(annotation, options = {}) {
+    if (!options.precise) {
+      const block = annotationBlockElement(annotation);
+      if (block) {
+        const blockOffset = Math.max(0, Math.round(Number(annotation.blockOffset) || 0));
+        return Math.max(0, previewBlockTop(block) + blockOffset);
+      }
+    }
     const target = targetAnnotationElement(annotation);
     if (!target) return 0;
     const scrollerRect = els.previewScroller.getBoundingClientRect();
@@ -3555,7 +4129,7 @@
   function jumpToAnnotation(annotation) {
     const target = targetAnnotationElement(annotation);
     if (!target) return;
-    const top = annotationTargetTop(annotation) - Math.max(36, els.previewScroller.clientHeight * 0.16);
+    const top = annotationTargetTop(annotation, { precise: true }) - Math.max(36, els.previewScroller.clientHeight * 0.16);
     setPreviewScrollTop(top, { recordCurrent: true, recordTarget: true });
     target.classList.add('annotation-pulse');
     window.setTimeout(() => target.classList.remove('annotation-pulse'), 1300);
@@ -3867,10 +4441,19 @@
     }
   }
 
-  function scheduleNoteMarginRender() {
+  function scheduleNoteMarginRender(delay = 0) {
+    clearTimeout(state.noteMarginTimer);
+    if (delay > 0) {
+      state.noteMarginTimer = window.setTimeout(() => {
+        state.noteMarginTimer = null;
+        scheduleNoteMarginRender();
+      }, delay);
+      return;
+    }
     if (state.noteMarginRaf) return;
     state.noteMarginRaf = window.requestAnimationFrame(() => {
       state.noteMarginRaf = 0;
+      state.lastNoteMarginRender = Date.now();
       renderNoteMargin();
     });
   }
@@ -4159,6 +4742,7 @@
   }
 
   function saveReadingProgressNow() {
+    if (state.documentDeleted) return;
     const progress = captureReadingProgress();
     const serialized = JSON.stringify(progress);
     if (serialized === state.lastSavedReadingProgress) return;
@@ -4208,11 +4792,33 @@
   }
 
   function scheduleScrollSync(kind) {
+    if (sourceIsHidden()) return;
     clearTimeout(state.scrollDebounceTimer);
     state.scrollDebounceTimer = setTimeout(() => {
       if (kind === 'preview') syncEditorToPreviewScroll();
       if (kind === 'source') syncPreviewToEditorScroll();
-    }, 35);
+    }, 90);
+  }
+
+  function schedulePreviewScrollFrame() {
+    if (state.previewScrollRaf) return;
+    state.previewScrollRaf = window.requestAnimationFrame(() => {
+      state.previewScrollRaf = 0;
+      hideFileContextMenu();
+      hideSelectionToolbar();
+      scheduleSourceAxisVisibleUpdate();
+      scheduleSourceAxisActiveUpdate();
+    });
+  }
+
+  function schedulePreviewScrollIdleWork() {
+    scheduleScrollSync('preview');
+    scheduleReadingProgressSave();
+    if (hasNoteAnnotations()) scheduleNoteMarginRender(220);
+    if (!state.readingHistoryApplying && state.scrollSyncLock !== 'source' && !state.previewScrollIntent) {
+      state.previewScrollIntent = true;
+    }
+    scheduleReadingHistoryCapture();
   }
 
   function maxPreviewScrollTop() {
@@ -4347,6 +4953,7 @@
   }
 
   function setMarkdown(markdown, options = {}) {
+    if (state.documentDeleted) return;
     state.markdown = markdown;
     if (!options.skipEditorUpdate) els.editor.value = markdown;
     updateSourceStatus();
@@ -4361,11 +4968,16 @@
 
   function scheduleSave() {
     clearTimeout(state.saveTimer);
+    if (state.documentDeleted) return;
     if (!state.autoSave) return;
     state.saveTimer = setTimeout(() => saveMarkdown(), 650);
   }
 
   function saveMarkdown(options = {}) {
+    if (state.documentDeleted) {
+      setStatus(t('documentDeleted'));
+      return;
+    }
     const markdown = state.markdown;
     if (markdown === state.committedMarkdown && !options.saveToDisk) {
       els.sourceStatus.textContent = t('synced');
@@ -4462,6 +5074,18 @@
 
   function handleHostMessage(message) {
     if (!message || typeof message.type !== 'string') return;
+    if (message.type === 'documentDeleted') {
+      if (message.uri !== state.uri) return;
+      state.documentDeleted = true;
+      clearTimeout(state.saveTimer);
+      clearTimeout(state.patchTimer);
+      clearTimeout(state.readingProgressSaveTimer);
+      state.pendingMarkdownSaves.clear();
+      if (Array.isArray(message.markdownFiles)) state.markdownFiles = message.markdownFiles;
+      applyDocumentAvailability();
+      renderMarkdownFiles();
+      return;
+    }
     if (message.type === 'documentLoaded' || message.type === 'documentChanged') {
       if (message.type === 'documentChanged' && message.uri !== state.uri) return;
       const incomingMarkdown = typeof message.markdown === 'string' ? message.markdown : '';
@@ -4481,6 +5105,7 @@
         ? ((pendingSwitch && pendingSwitch.restoreProgress) || message.readingProgress || state.readingProgress)
         : captureReadingProgress();
       if (message.type === 'documentLoaded') {
+        state.documentDeleted = false;
         state.uri = message.uri || state.uri;
         state.fileName = message.fileName || state.fileName;
         state.documentKind = message.documentKind || state.documentKind || 'markdown';
@@ -4503,6 +5128,7 @@
       els.editor.value = state.markdown;
       els.documentName.textContent = message.fileName || state.fileName;
       updateSourceStatus();
+      applyDocumentAvailability();
       renderMarkdownFiles();
       updateDocumentKindLabels();
       renderPreview({ initialProgress: restoreProgress, forceFull: message.type === 'documentLoaded' }).then(rendered => {
@@ -4558,6 +5184,10 @@
     if (message.type === 'filePathCopied') {
       if (message.uri !== state.uri) return;
       setStatus(t('pathCopied'));
+    }
+    if (message.type === 'previewSelectionCopied') {
+      if (message.uri !== state.uri) return;
+      setStatus(t('selectionCopied'));
     }
     if (message.type === 'linkedMarkdownResolved') {
       if (message.uri !== state.uri || !message.targetUri) return;
@@ -4628,21 +5258,12 @@
     });
 
     els.previewScroller.addEventListener('scroll', () => {
-      hideSelectionToolbar();
-      scheduleScrollSync('preview');
-      scheduleReadingProgressSave();
-      scheduleSourceAxisActiveUpdate();
-      if (hasNoteAnnotations()) scheduleNoteMarginRender();
-      if (!state.readingHistoryApplying && state.scrollSyncLock !== 'source' && !state.previewScrollIntent) {
-        state.previewScrollIntent = true;
-      }
-      scheduleReadingHistoryCapture();
-    });
+      schedulePreviewScrollFrame();
+      schedulePreviewScrollIdleWork();
+    }, { passive: true });
     els.previewScroller.addEventListener('wheel', () => {
       beginPreviewScrollIntent();
-      scheduleScrollSync('preview');
-      scheduleReadingHistoryCapture();
-    });
+    }, { passive: true });
     els.previewScroller.addEventListener('pointerdown', beginPreviewScrollIntent);
     els.previewScroller.addEventListener('pointerup', scheduleReadingHistoryCapture);
     els.previewScroller.addEventListener('pointercancel', scheduleReadingHistoryCapture);
@@ -4655,6 +5276,8 @@
     });
     els.preview.addEventListener('mouseup', handlePreviewSelection);
     els.preview.addEventListener('keyup', handlePreviewSelection);
+    els.preview.addEventListener('contextmenu', showPreviewContextMenu);
+    els.preview.addEventListener('copy', handlePreviewCopy);
     els.preview.addEventListener('input', event => {
       const block = event.target.closest('.md-block[contenteditable="true"]');
       if (block) schedulePreviewPatch(block);
@@ -4755,6 +5378,7 @@
       if (els.selectionToolbar.contains(event.target) || els.preview.contains(event.target)) return;
       hideSelectionToolbar();
     });
+    document.addEventListener('copy', handlePreviewCopy);
 
     window.addEventListener('message', event => handleHostMessage(event.data));
     window.addEventListener('beforeunload', () => {

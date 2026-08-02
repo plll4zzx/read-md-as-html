@@ -612,6 +612,17 @@ body.resizing .preview-scroller {
   outline: none;
 }
 
+.file-context-menu-item:disabled {
+  color: var(--muted);
+  opacity: 0.48;
+  cursor: default;
+}
+
+.file-context-menu-item:disabled:hover {
+  background: transparent;
+  color: var(--muted);
+}
+
 .outline-item {
   width: 100%;
   min-height: 30px;
@@ -783,7 +794,7 @@ body.resizing .preview-scroller {
 .preview {
   max-width: 980px;
   margin: 0 auto;
-  padding: 36px 34px 90px;
+  padding: 36px 34px 40px;
   line-height: 1.72;
   font-size: var(--preview-font-size);
   color: var(--reader-ink);
@@ -800,6 +811,30 @@ body.resizing .preview-scroller {
 
 .preview.empty {
   color: var(--muted);
+}
+
+.document-deleted-banner {
+  margin: 0 0 22px;
+  padding: 14px 16px;
+  border: 1px solid rgba(196, 88, 70, 0.32);
+  border-left: 4px solid #c45846;
+  border-radius: 8px;
+  background: rgba(255, 241, 235, 0.92);
+  color: #4b251e;
+}
+
+.document-deleted-title {
+  margin-bottom: 4px;
+  font-weight: 800;
+}
+
+.document-deleted-body {
+  color: #6f3a30;
+  line-height: 1.5;
+}
+
+body.document-deleted .preview-editable {
+  outline: none;
 }
 
 .preview h1,
