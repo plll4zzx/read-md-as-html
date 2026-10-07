@@ -1274,6 +1274,15 @@ body.table-box-resizing {
   overflow: auto;
 }
 
+/* MathJax 3 clips its accessible MathML visually, but its full height can
+   still enlarge a formula's scroll area. Keep it accessible in a tiny box. */
+.preview mjx-container mjx-assistive-mml {
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  clip-path: inset(50%);
+}
+
 .mermaid {
   padding: 14px;
   border: 1px solid var(--line);

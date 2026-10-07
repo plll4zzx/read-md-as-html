@@ -65,9 +65,9 @@ VS Code 原生 Markdown 预览很适合快速查看渲染效果。`read-md-as-ht
 ## 命令
 
 ```text
-read-md-as-html: Open Current Markdown
+read-md-as-html: Open Current Document
 read-md-as-html: Open Preview Only
-read-md-as-html: Export Current Markdown as Reader HTML
+read-md-as-html: Export Current Document as Reader HTML
 ```
 
 主命令也会出现在编辑器右上角，以及 `.md` / `.markdown` / `.tex` 文件的资源管理器右键菜单中。
@@ -77,8 +77,10 @@ read-md-as-html: Export Current Markdown as Reader HTML
 安装本地 VSIX 包：
 
 ```powershell
-code.cmd --install-extension .\read-md-as-html-0.0.1.vsix
+code.cmd --install-extension .\read-md-as-html-0.0.6.vsix
 ```
+
+开发调试前先运行 `npm ci` 和 `npm run build`；建议使用 Node.js 24.15 或更新版本。修改 `webview/` 后重新构建，再重载开发窗口。
 
 开发调试：
 
@@ -86,8 +88,23 @@ code.cmd --install-extension .\read-md-as-html-0.0.1.vsix
 1. 用 VS Code 打开这个插件目录。
 2. 按 F5 启动 Extension Development Host。
 3. 打开一个 Markdown 文件。
-4. 运行 "read-md-as-html: Open Current Markdown"。
+4. 运行 "read-md-as-html: Open Current Document"。
 ```
+
+### Linux Webview 启动错误
+
+如果 VS Code 报告 `Could not register service worker`，失败发生在插件 HTML 启动之前的 VS Code Webview 容器中。插件会自动重试一次，仍然失败时提供重新加载窗口或复制 Linux 修复命令的操作。
+
+如果问题持续出现，请完全退出所有 VS Code 窗口，然后运行：
+
+```bash
+rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/Code/Service Worker" \
+       "${XDG_CONFIG_HOME:-$HOME/.config}/Code/Cache" \
+       "${XDG_CONFIG_HOME:-$HOME/.config}/Code/CachedData" \
+       "${XDG_CONFIG_HOME:-$HOME/.config}/Code/GPUCache"
+```
+
+随后以普通用户身份重新启动 VS Code，不要使用 `sudo`。如果使用 VS Code Insiders 或 VSCodium，需要把路径中的 `Code` 替换为对应应用目录。使用 Remote SSH 时，应清理显示 VS Code 界面的本机缓存，而不是远程项目主机。该操作不会删除项目文件、设置、扩展、Markdown 批注或项目中的 `.md/` 状态目录。
 
 ## 配置项
 
@@ -369,12 +386,35 @@ flowchart LR
 - 参考文献作者、标题、来源、年份、URL 清楚。
 - 没有不必要的原生 HTML 或 base64 图片。
 
+## 离线阅读与 HTML 导出
+
+Marked、DOMPurify、Turndown、MathJax、Mermaid 及公式字体随 VSIX 一起安装。打开文档不需要从 CDN 下载渲染库。原文中的远程图片仍需网络。净化库不可用时，文档显示为转义后的源码，避免把未净化 HTML 插入页面。
+
+工具栏“导出”和命令面板的导出命令使用同一套渲染器，生成可直接在浏览器打开的单个 HTML 文件。命令面板会先打开阅读面板，再显示保存对话框。未保存的编辑器内容也会参与导出。
+
+- HTML 内嵌样式、本地图片和公式字体，保留已渲染的公式与 Mermaid 图。
+- 独立阅读页支持目录、正文搜索、列文本筛选、主题与字号、图像缩放和拖动、内部链接悬浮预览及打印。
+- 高亮和批注内容随快照保留；导出页是只读文档，不会回写源文件或跨文件阅读状态。
+- 表格导出包含全部行，导出后的筛选独立于编辑器中的筛选。
+- 远程图片保留在线链接；本地图片缺失时会显示提示，保存后也会报告未内嵌的资源。
+- 导出单篇文档，不打包其他 Markdown 文件；本地文档之间的链接不作为可移植阅读链接保留。
+
+## 开发结构与验证
+
+前端源码在 `webview/`：文档解析、渲染调度、表格、批注、导航、搜索、图片、编辑和导出分别位于独立模块。共享状态在 `state.js`，`main.js` 启动应用。模块通过显式导入连接。
+
+`npm run build` 生成 `media/app.js`、独立阅读页脚本、`dist/extension.cjs`，并复制带许可证的本地渲染资源。不要直接编辑生成的脚本。依赖版本及校验信息固定在 `package-lock.json` 中。
+
+`npm test` 执行公式分块、HTML 净化与降级、表格筛选、批注、Webview 初始化和独立导出的回归测试。运行 `node scripts/preview.cjs` 可在本机 8765 端口检查公式、图表、表格、图片与导出；也可传入文档路径作为参数，再打开 `/?document`。预览工具不会改写源文档，测试导出保存在项目 `.md/reader-smoke.html` 中。
+
 ## 打包
 
 生成 VSIX：
 
 ```powershell
-npx.cmd --yes @vscode/vsce@latest package --no-dependencies
+npm ci
+npm test
+npm run package
 ```
 
 ## 发布

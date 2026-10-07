@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; img-src ${cspSource} data: blob: https:; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource} https://cdn.jsdelivr.net 'nonce-${nonce}'; font-src ${cspSource} https:;">
+    content="default-src 'none'; img-src ${cspSource} data: blob: https:; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource} 'nonce-${nonce}'; font-src ${cspSource} data:;">
   <title>read-md-as-html</title>
   <link rel="stylesheet" href="${stylesUri}">
   <script nonce="${nonce}">
@@ -20,11 +20,11 @@
       }
     };
   </script>
-  <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js"></script>
-  <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/marked@13.0.3/marked.min.js"></script>
-  <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/turndown@7.2.0/dist/turndown.js"></script>
-  <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
-  <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+  <script nonce="${nonce}" src="${vendorUri}/purify.min.js"></script>
+  <script nonce="${nonce}" src="${vendorUri}/marked.min.js"></script>
+  <script nonce="${nonce}" src="${vendorUri}/turndown.js"></script>
+  <script nonce="${nonce}" src="${vendorUri}/mathjax/tex-chtml.js"></script>
+  <script nonce="${nonce}" src="${vendorUri}/mermaid.min.js"></script>
 </head>
 <body>
   <main class="studio-shell">

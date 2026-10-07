@@ -65,9 +65,9 @@ VS Code's native Markdown preview is excellent for quick checks. `read-md-as-htm
 ## Commands
 
 ```text
-read-md-as-html: Open Current Markdown
+read-md-as-html: Open Current Document
 read-md-as-html: Open Preview Only
-read-md-as-html: Export Current Markdown as Reader HTML
+read-md-as-html: Export Current Document as Reader HTML
 ```
 
 The main command is also available from the editor title bar and the Explorer context menu for `.md`, `.markdown`, and `.tex` files.
@@ -77,8 +77,10 @@ The main command is also available from the editor title bar and the Explorer co
 Install a packaged VSIX:
 
 ```powershell
-code.cmd --install-extension .\read-md-as-html-0.0.1.vsix
+code.cmd --install-extension .\read-md-as-html-0.0.6.vsix
 ```
+
+Before debugging, run `npm ci` and `npm run build` with Node.js 24.15 or newer. Rebuild after editing `webview/`, then reload the development window.
 
 For development:
 
@@ -86,8 +88,23 @@ For development:
 1. Open this folder in VS Code.
 2. Press F5 to launch an Extension Development Host.
 3. Open a Markdown file.
-4. Run "read-md-as-html: Open Current Markdown".
+4. Run "read-md-as-html: Open Current Document".
 ```
+
+### Linux Webview startup error
+
+If VS Code reports `Could not register service worker`, the failure occurs in the VS Code Webview container before this extension's HTML starts. The extension automatically retries once and then offers a window reload or a Linux repair command.
+
+For a persistent error, fully quit every VS Code window and run:
+
+```bash
+rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/Code/Service Worker" \
+       "${XDG_CONFIG_HOME:-$HOME/.config}/Code/Cache" \
+       "${XDG_CONFIG_HOME:-$HOME/.config}/Code/CachedData" \
+       "${XDG_CONFIG_HOME:-$HOME/.config}/Code/GPUCache"
+```
+
+Restart VS Code as a normal user, not through `sudo`. For VS Code Insiders or VSCodium, replace the `Code` directory with the corresponding application directory. In Remote SSH sessions, clear the cache on the machine displaying the VS Code UI, not the remote project host. This does not remove project files, settings, extensions, Markdown annotations, or the project `.md/` state directory.
 
 ## Configuration
 
@@ -369,12 +386,35 @@ Rules:
 - Reference author, title, source, year, and URL fields are clear.
 - There is no unnecessary raw HTML or base64 image content.
 
+## Offline reading and HTML export
+
+Marked, DOMPurify, Turndown, MathJax, Mermaid and equation fonts are installed with the VSIX. Rendering libraries do not load from a CDN. Remote images in the source still require network access. If the sanitizer is unavailable, the reader displays escaped source instead of inserting unsanitized HTML.
+
+The toolbar and command-palette export use the same renderer to produce a single browser-readable HTML file. The command opens a reader panel before showing the save dialog. Unsaved editor content is included.
+
+- Styles, local images and equation fonts are embedded; rendered equations and Mermaid figures are preserved.
+- The standalone reader includes an outline, text search, column text filters, theme and font controls, image zoom and pan, internal-link previews, and printing.
+- Highlights and note contents are preserved in the snapshot. The export is read-only and does not write back to source files or cross-file reading state.
+- Tables include all rows; exported filters operate independently of the editor's filters.
+- Remote images retain their online URLs. Missing local images show a placeholder; resources that were not embedded are reported after saving.
+- Export covers one document, not a document collection. Links to other local Markdown documents are not retained as portable reader links.
+
+## Development structure and validation
+
+Frontend source lives in `webview/`, with separate modules for document parsing, render scheduling, tables, annotations, navigation, search, images, editing and export. `state.js` contains shared state and `main.js` starts the app. Modules use explicit imports.
+
+`npm run build` generates `media/app.js`, the standalone reader script and `dist/extension.cjs`, and copies local rendering assets with their licenses. Edit source modules rather than generated scripts. `package-lock.json` pins dependency versions and integrity hashes.
+
+`npm test` checks math blocks, sanitization and fallback, table filters, annotations, Webview initialization and standalone exports. Run `node scripts/preview.cjs` for a local browser check on port 8765, or pass a document path and open `/?document`. The preview host does not modify the source; test exports are saved to `.md/reader-smoke.html` in this project.
+
 ## Packaging
 
 Build a VSIX package:
 
 ```powershell
-npx.cmd --yes @vscode/vsce@latest package --no-dependencies
+npm ci
+npm test
+npm run package
 ```
 
 ## Publishing

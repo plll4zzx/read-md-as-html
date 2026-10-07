@@ -1,3 +1,9 @@
 .vscode/
 media/*.mp4
 .md/
+node_modules/
+dist/
+media/vendor/
+media/reader.js
+*.vsix
+!read-md-as-html-latest.vsix

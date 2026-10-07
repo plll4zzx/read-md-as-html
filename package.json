@@ -2,7 +2,7 @@
   "name": "read-md-as-html",
   "displayName": "read-md-as-html",
   "description": "Read Markdown and LaTeX as an HTML document inside VS Code.",
-  "version": "0.0.1",
+  "version": "0.0.6",
   "publisher": "local",
   "repository": {
     "type": "git",
@@ -23,7 +23,7 @@
     "onCommand:readMdAsHtml.openPreviewOnly",
     "onCommand:readMdAsHtml.exportCurrentMarkdownAsReaderHtml"
   ],
-  "main": "./src/extension.js",
+  "main": "./dist/extension.cjs",
   "contributes": {
     "commands": [
       {
@@ -109,5 +109,24 @@
         }
       }
     }
+  },
+  "devDependencies": {
+    "@vscode/vsce": "4.0.0",
+    "esbuild": "0.28.2",
+    "jsdom": "30.1.1"
+  },
+  "dependencies": {
+    "dompurify": "3.4.16",
+    "linkedom": "0.18.13",
+    "marked": "13.0.3",
+    "mathjax": "3.2.2",
+    "mermaid": "10.9.8",
+    "turndown": "7.2.4"
+  },
+  "scripts": {
+    "build": "node scripts/build.cjs",
+    "test": "npm run build && node --test tests/*.test.cjs",
+    "vscode:prepublish": "npm run build",
+    "package": "vsce package --skip-license --no-dependencies"
   }
 }

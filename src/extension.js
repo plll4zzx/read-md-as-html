@@ -1,6 +1,7 @@
 const vscode = require('vscode');
 const path = require('path');
 const crypto = require('crypto');
+const { createReaderHtml } = require('./export-html');
 
 const textDecoder = new TextDecoder('utf-8');
 const textEncoder = new TextEncoder();
@@ -22,6 +23,7 @@ function activate(context) {
 function deactivate() {}
 
 async function openStudio(context, uri, options) {
+  const targetViewColumn = activeEditorGroupColumn();
   const documentUri = await resolveMarkdownUri(uri);
   if (!documentUri) return;
 
@@ -30,7 +32,7 @@ async function openStudio(context, uri, options) {
   const panel = vscode.window.createWebviewPanel(
     'readMdAsHtml',
     panelTitleFor(documentUri),
-    vscode.ViewColumn.Beside,
+    { viewColumn: targetViewColumn, preserveFocus: false },
     {
       enableScripts: true,
       retainContextWhenHidden: true,
@@ -41,10 +43,19 @@ async function openStudio(context, uri, options) {
 
   const state = await loadDocumentState(context, documentUri, Object.assign({}, options, { projectRoot: workspaceRoot }));
 
+  const webviewStartupWatchdog = createWebviewStartupWatchdog(context, panel, state);
+  wirePanelMessages(context, panel, state, webviewStartupWatchdog);
   panel.webview.html = await webviewHtml(context, panel.webview, state);
   applyPanelIdentity(panel, mediaRoot, documentUri);
-  wirePanelMessages(context, panel, state);
+  webviewStartupWatchdog.start();
   const markdownDirectoryWatcher = watchMarkdownDirectory(panel, state);
+  const panelViewStateWatcher = panel.onDidChangeViewState(event => {
+    if (!event.webviewPanel.visible) return;
+    panel.webview.postMessage({
+      type: 'panelVisible',
+      uri: state.documentUri.toString()
+    });
+  });
 
   const watcher = vscode.workspace.onDidChangeTextDocument((event) => {
     if (event.document.uri.toString() !== state.documentUri.toString()) return;
@@ -71,7 +82,87 @@ async function openStudio(context, uri, options) {
   panel.onDidDispose(() => {
     watcher.dispose();
     markdownDirectoryWatcher.dispose();
+    panelViewStateWatcher.dispose();
+    webviewStartupWatchdog.dispose();
   });
+}
+
+function createWebviewStartupWatchdog(context, panel, state) {
+  const timeoutMs = 12000;
+  let timer = null;
+  let ready = false;
+  let disposed = false;
+  let retried = false;
+
+  const schedule = () => {
+    clearTimeout(timer);
+    if (ready || disposed) return;
+    timer = setTimeout(check, timeoutMs);
+  };
+
+  const check = async () => {
+    timer = null;
+    if (ready || disposed) return;
+    if (!retried) {
+      retried = true;
+      try {
+        const html = await webviewHtml(context, panel.webview, state);
+        if (ready || disposed) return;
+        panel.webview.html = html;
+        applyPanelIdentity(panel, vscode.Uri.joinPath(context.extensionUri, 'media'), state.documentUri);
+        schedule();
+        return;
+      } catch (error) {
+        console.error('read-md-as-html webview retry failed', error);
+      }
+    }
+    if (ready || disposed) return;
+    await showWebviewStartupFailure();
+  };
+
+  return {
+    start: schedule,
+    markReady() {
+      ready = true;
+      clearTimeout(timer);
+      timer = null;
+    },
+    dispose() {
+      disposed = true;
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+}
+
+async function showWebviewStartupFailure() {
+  const language = vscode.workspace.getConfiguration('readMdAsHtml').get('language', 'en');
+  const chinese = language === 'zh-CN';
+  const message = chinese
+    ? 'read-md-as-html 无法启动 Webview。Linux 上这通常是 VS Code Service Worker 缓存损坏；请先尝试重新加载窗口。'
+    : 'read-md-as-html could not start its Webview. On Linux this usually means the VS Code Service Worker cache is invalid; reload the window first.';
+  const reloadLabel = chinese ? '重新加载窗口' : 'Reload Window';
+  const copyLabel = chinese ? '复制 Linux 修复命令' : 'Copy Linux Repair Command';
+  const actions = process.platform === 'linux' ? [reloadLabel, copyLabel] : [reloadLabel];
+  const selected = await vscode.window.showWarningMessage(message, ...actions);
+  if (selected === reloadLabel) {
+    await vscode.commands.executeCommand('workbench.action.reloadWindow');
+    return;
+  }
+  if (selected === copyLabel) {
+    const command = 'rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/Code/Service Worker" "${XDG_CONFIG_HOME:-$HOME/.config}/Code/Cache" "${XDG_CONFIG_HOME:-$HOME/.config}/Code/CachedData" "${XDG_CONFIG_HOME:-$HOME/.config}/Code/GPUCache"';
+    await vscode.env.clipboard.writeText(command);
+    vscode.window.showInformationMessage(chinese
+      ? '修复命令已复制。请完全退出 VS Code 后在终端运行，再重新启动；不会删除项目文件、设置或扩展。'
+      : 'Repair command copied. Fully quit VS Code, run it in a terminal, then restart. It does not delete project files, settings, or extensions.');
+  }
+}
+
+function activeEditorGroupColumn() {
+  const activeGroup = vscode.window.tabGroups && vscode.window.tabGroups.activeTabGroup;
+  if (activeGroup && activeGroup.viewColumn) return activeGroup.viewColumn;
+  const activeEditor = vscode.window.activeTextEditor;
+  return activeEditor && activeEditor.viewColumn ? activeEditor.viewColumn : vscode.ViewColumn.One;
 }
 
 async function resolveMarkdownUri(uri) {
@@ -121,7 +212,7 @@ function uriIsInsideDirectory(rootUri, targetUri) {
 
 async function loadDocumentState(context, documentUri, options = {}) {
   const projectRoot = options.projectRoot || projectRootFor(documentUri);
-  const markdown = await readText(documentUri);
+  const markdown = await currentMarkdownFor(documentUri);
   const documentKind = documentKindForUri(documentUri);
   const embedded = annotationsFromSource(markdown, documentKind);
   const documentCache = await documentCacheFor(context, documentUri, projectRoot);
@@ -132,6 +223,7 @@ async function loadDocumentState(context, documentUri, options = {}) {
     markdown,
     markdownHash: hashText(markdown),
     previewOnly: !!options.previewOnly,
+    exportOnReady: !!options.exportOnReady,
     documentDeleted: false,
     markdownFilesCache: Array.isArray(options.markdownFilesCache) ? options.markdownFilesCache : null,
     markdownFilesCacheRoot: options.markdownFilesCacheRoot || '',
@@ -419,6 +511,7 @@ async function webviewHtml(context, webview, state) {
     markdownHash: state.markdownHash,
     markdownFiles: await markdownFilesForState(state),
     previewOnly: state.previewOnly,
+    exportOnReady: state.exportOnReady,
     autoSave: vscode.workspace.getConfiguration('readMdAsHtml').get('autoSave', true),
     previewEditEnabled: vscode.workspace.getConfiguration('readMdAsHtml').get('previewEditEnabledByDefault', false),
     theme: vscode.workspace.getConfiguration('readMdAsHtml').get('theme', 'reader-light'),
@@ -433,14 +526,16 @@ async function webviewHtml(context, webview, state) {
     .replaceAll('${nonce}', nonce)
     .replaceAll('${stylesUri}', String(stylesUri))
     .replaceAll('${appUri}', String(appUri))
-    .replace('${initialState}', escapeScriptJson(config));
+    .replaceAll('${vendorUri}', String(webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'vendor'))))
+    .replace('${initialState}', () => escapeScriptJson(config));
 }
 
-function wirePanelMessages(context, panel, state) {
+function wirePanelMessages(context, panel, state, webviewStartupWatchdog) {
   panel.webview.onDidReceiveMessage(async (message) => {
     try {
       if (!message || typeof message.type !== 'string') return;
       if (message.type === 'ready') {
+        if (webviewStartupWatchdog) webviewStartupWatchdog.markReady();
         const mediaRoot = vscode.Uri.joinPath(context.extensionUri, 'media');
         applyPanelIdentity(panel, mediaRoot, state.documentUri);
         panel.webview.postMessage({
@@ -597,7 +692,16 @@ function wirePanelMessages(context, panel, state) {
         });
       }
       if (message.type === 'exportHtml') {
-        await saveExportHtml(state.documentUri, String(message.html || ''), state.projectRoot);
+        if (message.uri !== state.documentUri.toString()) return;
+        const exportUri = state.documentUri;
+        const exportRoot = state.projectRoot;
+        const result = await createReaderHtml(message, {
+          readAsset: relative => readText(vscode.Uri.joinPath(context.extensionUri, 'media', relative)),
+          readBytes: relative => vscode.workspace.fs.readFile(vscode.Uri.joinPath(context.extensionUri, 'media', relative)),
+          readImage: relative => vscode.workspace.fs.readFile(resolveRelativeUri(exportUri, relative))
+        });
+        const saved = await saveExportHtml(exportUri, result.html, exportRoot);
+        if (saved && result.warnings.length) vscode.window.showWarningMessage(result.warnings.join('\n'));
       }
       if (message.type === 'updateTheme') {
         const theme = String(message.theme || 'reader-light');
@@ -1159,25 +1263,11 @@ async function saveExportHtml(markdownUri, html, projectRoot = projectRootFor(ma
   await ensureDirectory(vscode.Uri.file(path.dirname(target.fsPath)));
   await vscode.workspace.fs.writeFile(target, textEncoder.encode(html));
   vscode.window.showInformationMessage(`read-md-as-html exported ${path.basename(target.fsPath)}`);
+  return true;
 }
 
 async function exportCurrentMarkdown(context, uri) {
-  const documentUri = await resolveMarkdownUri(uri);
-  if (!documentUri) return;
-  const markdown = await readText(documentUri);
-  const title = escapeHtml(path.basename(documentUri.fsPath));
-  const body = escapeHtml(markdown);
-  const html = [
-    '<!doctype html>',
-    '<html lang="zh-CN">',
-    '<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">',
-    `<title>${title}</title>`,
-    '<style>body{margin:0;background:#f5f6f3;color:#1f241f;font-family:Segoe UI,Noto Sans SC,Arial,sans-serif}main{max-width:960px;margin:0 auto;padding:48px 32px;background:#fffefb;min-height:100vh}pre{white-space:pre-wrap;line-height:1.65}</style>',
-    '</head><body><main>',
-    `<h1>${title}</h1><pre>${body}</pre>`,
-    '</main></body></html>'
-  ].join('\n');
-  await saveExportHtml(documentUri, html, projectRootFor(documentUri));
+  await openStudio(context, uri, { previewOnly: true, exportOnReady: true });
 }
 
 function resolveRelativeUri(markdownUri, relativePath) {
